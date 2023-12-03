@@ -12,23 +12,6 @@
 /*******************************************************************************
   getEmbedConfig()
 *******************************************************************************/
-async function getHeaders() {
-
-  try {
-    const response = await fetch("https://app.powerbi.com/reportEmbed?reportId=bc027587-5e9e-4920-bf03-a45fd3079f25&groupId=7939b090-7b24-4c18-907e-ec58908cddbd&w=2&config=eyJjbHVzdGVyVXJsIjoiaHR0cHM6Ly9XQUJJLUFVU1RSQUxJQS1TT1VUSEVBU1QtcmVkaXJlY3QuYW5hbHlzaXMud2luZG93cy5uZXQiLCJlbWJlZEZlYXR1cmVzIjp7InVzYWdlTWV0cmljc1ZOZXh0Ijp0cnVlfX0%3d&uid=yqa6ft");
-
-    // Convert the response into text
-    const data = await response;
-    console.log(data);
-
-  } catch (error) {
-    console.log(error);
-  }
-}
-
-/*******************************************************************************
-  getEmbedConfig()
-*******************************************************************************/
 async function getToken() {
 
   const embedToken = 'H4sIAAAAAAAEAB2Ut660ZgAF3-W2WCJ8REt_Qd4lLxk6clxytvzuvnI_1WjO-efHSu5-TPKfv39O8QMlLUu0MeOniivQyPrVbgZEyPIUPuTLLCaACLJJ2gJNVrvKon2wzibEAn3R3jcAonFeqnA_Ab57RPuRtZyHdLNkstqCU4t1T2o6trcm7ezueRR6do-dyeHJTRf17i5fOxVoQNQvI42p3Dth2hVaqJS2u4GuqTZUUV-U9GWwq-_xWchxFzib4j6ID5samVcLQ41KhNp0FHY7ZUynFxYLwCnY14xBRxk8feDrJtnXziEItZVI5BSOj7OD8AlE8la2LJ_5jorzWUxMw--1HMrgw-2qIJxWSbuuhJnkZYdcs7a214qWfJ-B6FUgaCt7Q0UXDxbOdYOSGCJJwKSj6l23Ms72PBk-dAQFTFXBuvJ2LmJSKlSPTpPnuOmJz8XHjq5UpsWRS_u4XXiJCaT7OncycqaAp23fPGNxw1vaYUhfWcDG23BwvKPqVp7DrX7aGErOdlAjh9mKBtkKqXKEYpsbo5HH_Xh2hHhV5B3xG4TttMksqEhambirHA6q65jm0ArMLPTQalO3954oYKtgN7G85pI4kBoQSqxTsyn8ylaATV8hG5MBqEv0e-H5ZCJNXbkZJsVKz8kqO_DzYjlDcGUnMoI-emFL8Kpzq1oBYqJU1TGjQB486w-6coezjEdzFF3pQ8CQvyeW-F3vuIKlR0HnQFFCfqBgJgqPiGunTl2WDiYc2AOFua4DGSg5QuFjOeyQVb-Ub6CjI4Bx5prm_ta36xGj7gtpchs7SVZOjXRukZ79-fnrh1_uaRvV4v5NX1xVWcHc-lOKqKG3TIINxXTd33f_Fs-HcIuCBOxQ3rOZ5LY63yHzEfySZa7nrl7p6s1Bf6SUgUj9dDzBbcPJ63Pt6x7VByWYqZbve67aIDPuI42GZkin0DX1FDweinvxV4OQUT7LESey08qcHQGfMxQ939YDh0I6Ur8mWLgaK4M2t9tOHYLBmCX2ulzsSiVlyK9hNkVlEWXWh7j42dfAY4oPoNNv7qtT8YamLXVpMm6EMaiR79QWBu_n55aLH3O0EqLpwFWmW6h2IuJPpjLoQdabfa959CutKC6hq_LJrZduSoeFZWW3oBjw6YZoXczd-EHQ5v0D3ygeyGRAQMP2vj_458__mu-pLpa3_2uZeUS_aFGQf1GBapdjYOtQqf6nnKYakm1fil9MutkKbXfVW6vZGatZS084Y58JwdqOyBVIHSnFqIetY9Ms0vNTt0lM6gTM3kxvVYiH9ofVqGrRP5wl8EIzvrOCsO1PjnfuN8SVi6VBR7PvECzSAbcfIRoyNcSXPO3j_m3gMk_RMGdutbF0GL2lzS52bFOEZabI3PxW30kLee1RrowCSfdvJ1xQn20dlt7Ubwu3QyMD7li0rLNoXjwyZeI1AGFZVEXyDCKxmPzt-uZ-DAvvJL02kEMu264-C_7AQE1tjL87d01ujGUkmA0AKyVIy9UBxBJU5l0dLIFPiO-DYdY5auEb2pcnS6Sb-7arlLtF7feus9y_1f4h1vBcnrhj5vNX87__ATC40_TuBQAA.eyJjbHVzdGVyVXJsIjoiaHR0cHM6Ly9XQUJJLUFVU1RSQUxJQS1TT1VUSEVBU1QtcmVkaXJlY3QuYW5hbHlzaXMud2luZG93cy5uZXQiLCJleHAiOjE3MDE2NDk5NzEsImFsbG93QWNjZXNzT3ZlclB1YmxpY0ludGVybmV0Ijp0cnVlfQ==';
@@ -227,7 +210,7 @@ async function getCaseNumbers(disease) {
     }
     
     const fname = await getLatestUpdateDate() + '_cases.json';
-    fs.writeFileSync(fname,JSON.stringify(rows));
+    fs.writeFileSync('data/'+ fname,JSON.stringify(rows));
 
     // console.log(diseases);
     return diseases;
@@ -237,5 +220,4 @@ async function getCaseNumbers(disease) {
   }
 }
 
-getHeaders();
-getDiseaseList();
+  getDiseaseList();
