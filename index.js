@@ -66,8 +66,8 @@
         token: data.exploration.mwcToken,
         capacityUri: data.exploration.capacityUri
       })
-    
       return params;
+
     } catch (error) {
       console.log(error);
     }
@@ -76,16 +76,15 @@
 /*******************************************************************************
   getLatestUpdateDate()
 *******************************************************************************/
-  async function getLatestUpdateDate() {
-    const params = await getToken();
+  async function getLatestUpdateDate(capacityUri,token) {
 
     try {
       const response = await fetch(
-        params[0].capacityUri + 'query', {
+        capacityUri + 'query', {
         "headers": {
           "accept": "application/json, text/plain, */*",
           "accept-language": "en-AU,en-US;q=0.9,en;q=0.8,fr;q=0.7",
-          "authorization": "MWCToken " + await params[0].token,
+          "authorization": "MWCToken " + token,
           "content-type": "application/json;charset=UTF-8",
           "sec-ch-ua": "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"",
           "sec-ch-ua-mobile": "?0",
@@ -115,17 +114,17 @@
 /*******************************************************************************
   getCaseNumbers()
 *******************************************************************************/
-async function getCaseNumbers(diseaseName) {
-  const params = await getToken();
+async function getCaseNumbers(capacityUri,token,reportDate,diseaseName) {
+
 
   try {
     // Fetch data from URL and store the response into a const
     const response = await fetch(
-      params[0].capacityUri + 'query', {
+      capacityUri + 'query', {
       "headers": {
         "accept": "application/json, text/plain, */*",
         "accept-language": "en-AU,en-US;q=0.9,en;q=0.8,fr;q=0.7",
-        "authorization": "MWCToken " + params[0].token,
+        "authorization": "MWCToken " + token,
         "content-type": "application/json;charset=UTF-8",
         "sec-ch-ua": "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"",
         "sec-ch-ua-mobile": "?0",
@@ -147,8 +146,7 @@ async function getCaseNumbers(diseaseName) {
     // loop through records
     const records = [];
     const results = data.results[0].result.data.dsr.DS[0].PH[0].DM0;
-
-    const reportDate = await getLatestUpdateDate();
+    
     var number = 0;
     var year;
     
@@ -194,16 +192,20 @@ async function getCaseNumbers(diseaseName) {
   getDiseaseList()
 *******************************************************************************/
 async function getDiseaseList() {
+  
   const params = await getToken();
+  const capacityUri = params[0].capacityUri;
+  const token = params[0].token;
+  const reportDate = await getLatestUpdateDate(capacityUri,token);
 
   try {
     // Fetch data from URL and store the response into a const
     const response = await fetch(
-      params[0].capacityUri + 'query', {
+      capacityUri + 'query', {
         "headers": {
         "accept": "application/json, text/plain, */*",
         "accept-language": "en-AU,en-US;q=0.9,en;q=0.8,fr;q=0.7",
-        "authorization": "MWCToken " + params[0].token,
+        "authorization": "MWCToken " + token,
         "content-type": "application/json;charset=UTF-8",
         "sec-ch-ua": "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"",
         "sec-ch-ua-mobile": "?0",
@@ -220,24 +222,19 @@ async function getDiseaseList() {
     
     // Convert the response into text
     const data = await response.json();
-    const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);
+    const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);    
     
     const rows = [];
-
     for(const diseaseName of diseases){
-      rows.push(...await getCaseNumbers(diseaseName));
+      rows.push(await getCaseNumbers(capacityUri,token,reportDate,diseaseName));
     }
     
-    const fname = await getLatestUpdateDate() + '_cases.json';
+    const fname = reportDate + '_cases.json';
     fs.writeFileSync('data/'+ fname,JSON.stringify(rows));
 
-    // console.log(diseases);
-    return diseases;
-    
   } catch (error) {
     console.log(error);
   }
 }
-  
   // getCaseNumbers('COVID-19');
   getDiseaseList();
