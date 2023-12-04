@@ -1,0 +1,33 @@
+name: NINDSS Data
+on:
+  # push:
+  #   branches:
+  #     - main
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  archive:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 1
+        ref: main
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 18
+    - name: Install dependencies
+      run: yarn
+    - name: Run script
+      run: node run.js
+      timeout-minutes: 5
+    - name: Push data
+      run: |
+        git config user.name amacali
+        git config user.email anthony@macali.com.au
+        git add . || exit 0
+        git commit -m "auto(): update feeds" || exit 0
+        git push || exit 0
