@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: yarn
     - name: Run script
-      run: node run.js
+      run: node index.js
       timeout-minutes: 5
     - name: Push data
       run: |
