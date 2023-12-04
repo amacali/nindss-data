@@ -224,9 +224,9 @@ async function getDiseaseList() {
     const data = await response.json();
     const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);    
     
-    const rows = [];
+    var rows = [];
     for(const diseaseName of diseases){
-      rows.push(await getCaseNumbers(capacityUri,token,reportDate,diseaseName));
+      rows = rows.concat(await getCaseNumbers(capacityUri,token,reportDate,diseaseName));
     }
     
     const fname = reportDate + '_cases.json';
