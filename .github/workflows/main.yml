@@ -20,7 +20,7 @@ jobs:
       with:
         node-version: 18
     - name: Install dependencies
-      run: yarn
+      run: npm install
     - name: Run script
       run: node index.js
       timeout-minutes: 5
