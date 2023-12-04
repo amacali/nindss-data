@@ -23,7 +23,7 @@ jobs:
       run: npm install
     - name: Run script
       run: node index.js
-      timeout-minutes: 5
+      timeout-minutes: 10
     - name: Push data
       run: |
         git config user.name amacali
