@@ -9,16 +9,9 @@ on:
 
 jobs:
   archive:
-    timeout-minutes: 5
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 1
-        ref: main
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 18
     - name: Install dependencies
       run: npm install
     - name: Run script
