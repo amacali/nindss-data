@@ -4,13 +4,21 @@ on:
   #   branches:
   #     - main
   schedule:
-    - cron: '0 9 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
   archive:
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 1
+        ref: main
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 18    
     steps:
     - name: Install dependencies
       run: npm install
