@@ -1,5 +1,5 @@
 # National Notifiable Disease Surveillance System data for Australia #
-Our complete dataset is a collection of COVID-19 maintained by *[COVID Live](https://covidlive.com.au/about)*. COVID Live data is collected from media releases and [verified](https://covidlive.com.au/last-updated) against state and federal health departments.
+Daily cumulative case total snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
 ### 📅 data ##
 | Field | Description |
