@@ -1,7 +1,7 @@
 # National Notifiable Disease Surveillance System data for Australia #
 Daily cumulative case total snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
-### 📅 data ##
+### 📅 data/YYYYMMDD.json ##
 | Field | Description |
 | --- | --- |
 | `REPORT_DATE` | Reporting date AEDT |
