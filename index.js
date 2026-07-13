@@ -3,10 +3,13 @@
 
   Pulls notifiable-disease notification counts for Australia from the NINDSS
   PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/) and writes a
-  snapshot to data/<report_date>_notifications*.json. Two modes:
-    node index.js         → year totals per state (daily)
-    node index.js month   → per-month breakdown   (_month.json, on request)
-  Both derive from the same month-level query; the daily file just sums months.
+  snapshot to data/<report_date>_notifications*.json. Three modes:
+    node index.js         → all-time totals per state (daily, default)
+    node index.js year    → per-year breakdown  (_year.json,  on request)
+    node index.js month   → per-month breakdown (_month.json, on request)
+  Each mode queries at its own granularity rather than summing a finer file:
+  the dashboard masks cells <5, so summing accumulates the loss (see
+  getCaseNumbers). Coarser files are the least-masked source for their shape.
 
   There is no public NINDSS API. Instead this reverse-engineers the embedded
   PowerBI report the dashboard renders. The flow is:
@@ -159,32 +162,79 @@
 
 
 /*******************************************************************************
-  getCaseNumbers()
+  getCaseNumbers(capacityUri, token, diseaseName, mode)
 
-  Queries per-year, per-month, per-state notification counts for a single
-  disease and returns them nested as { <year>: { <month>: { <state>: count } } }.
+  Queries per-state notification counts for a single disease and returns them
+  nested by period. `mode` picks BOTH the query granularity and the return shape:
+    'total' → all-time per-state counts  → { <state>: count }
+    'year'  → per-year per-state counts  → { <year>: { <state>: count } }
+    'month' → per-year per-month counts  → { <year>: { <month>: { <state>: count } } }
 
-  Decoding the PowerBI response involves two SEPARATE sparse-encoding schemes
-  that are easy to confuse:
+  WHY THREE GRANULARITIES instead of always querying months and summing up:
+  the dashboard masks any displayed cell whose count is <5. Masking bites at
+  whatever granularity you query, so summing finer cells accumulates the loss —
+  a cell that is <5 per month is usually >=5 per year, and a state's all-time
+  total is masked only if it is genuinely <5 forever. Each mode is therefore the
+  LEAST-masked source for its own shape (measured against COVID-19's true
+  national lifetime total): 'total' = 12,302,011, 'year' summed = 12,302,009,
+  'month' summed = 12,301,939. Query each level directly rather than deriving a
+  coarser file from a finer one.
 
-    1. Row sparsity (the DM0 rows). Because more than one dimension is
-       projected (year + month), dimension values are dictionary-encoded:
-       ValueDicts.D0 holds the year strings, D1 the month names, and each row
-       stores integer indexes into them via row.C. To save bytes a row omits
-       any leading dimension that is unchanged from the previous row; row.R is
-       a bitmask flagging which of [year, month] repeat, so only the *changed*
-       dimensions are present in row.C (consumed left-to-right). We carry the
-       last-seen value forward in `current` to fill the gaps.
+  TWO RESPONSE LAYOUTS, because PowerBI rejects a secondary axis with no primary
+  ("SecondaryGroupsWithoutPrimary"):
+    - 'total' has no period dimension, so STATE must go on the PRIMARY axis: each
+      DM0 row is one state, C = [state, measure]. There is no secondary axis / X
+      array and no SH state list.
+    - 'year'/'month' keep STATE on the SECONDARY axis (the X array, one entry per
+      state) with the period(s) as the primary rows; the state labels come from
+      SH[0].DM1.
 
-    2. Measure sparsity (the row.X array, one entry per state). A state's M0 is
-       likewise omitted when it repeats the previous state's value, so `number`
-       carries forward — see "check if value exists, otherwise repeat" below.
+  Decoding involves up to two SEPARATE sparse-encoding schemes:
 
-  NOTE: the state labels live on the secondary axis as G2 (not G1). Projecting
-  an extra hierarchy level shifts every later dimension's G-number, so this key
-  must move in lock-step with the query's Select list.
+    1. Row sparsity (the DM0 rows, row.R bitmask). Wherever more than one value
+       is projected onto a row, row.R flags which projections REPEAT the previous
+       row, so only the *changed* ones appear in row.C (consumed left-to-right);
+       the rest carry forward. This drives: 'total' rows over [state, measure];
+       and 'month' rows over dictionary-encoded [year, month] (ValueDicts.D0/D1).
+       'year' projects a single primary dimension, so the year is stored directly
+       as row.G0 with no dictionary/bitmask.
+
+    2. Measure sparsity (the row.X array in 'year'/'month'). A state's M0 is
+       omitted when it repeats the previous state's value, so `number` carries
+       forward — see "check if value exists, otherwise repeat" below.
+
+  NOTE: in 'year'/'month' the STATE secondary-axis key is G<n> where n = number
+  of primary dimensions: G1 for 'year' (year only), G2 for 'month' (year+month).
+  Projecting an extra hierarchy level shifts every later dimension's G-number, so
+  this key must move in lock-step with the Select list.
 *******************************************************************************/
-async function getCaseNumbers(capacityUri,token,diseaseName) {
+async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
+
+  // The three queries differ only in which period dimensions are projected and
+  // how STATE is bound. Assemble the varying pieces per mode:
+  //   'total' → Select [STATE, Measure];        Primary [0,1], no Secondary
+  //   'year'  → Select [STATE, Year, Measure];  Primary [1,2], Secondary [STATE]
+  //   'month' → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
+  const SEL_YEAR = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"}";
+  const SEL_MONTH = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Month Name\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Month Name\"}";
+  const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
+  const ORDER_YEAR = "{\"Direction\":1,\"Expression\":{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"}}},";
+  const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";
+
+  // Period selects (between STATE and the measure), primary projections, binding,
+  // and order-by, per mode.
+  const periodSelect = mode === 'month' ? SEL_YEAR + "," + SEL_MONTH + ","
+                     : mode === 'year'  ? SEL_YEAR + ","
+                     : "";
+  const primaryProjections = mode === 'month' ? "[1,2,3]"
+                           : mode === 'year'  ? "[1,2]"
+                           : "[0,1]";              // total: [STATE, measure]
+  const binding = mode === 'total'
+    ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
+    : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}},\"Secondary\":{\"Top\":{\"Count\":60}}},\"Version\":1}";
+  const orderBy = mode === 'total' ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
+
+  const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Comparison\":{\"ComparisonKind\":1,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"1990L\"}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
 
   try {
     // Fetch data from URL and store the response into a const
@@ -204,57 +254,98 @@ async function getCaseNumbers(capacityUri,token,diseaseName) {
         "Referer": "https://app.powerbi.com/",
         "Referrer-Policy": "strict-origin-when-cross-origin"
       },
-      "body": "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"},{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"},{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Month Name\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Month Name\"},{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Comparison\":{\"ComparisonKind\":1,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"1990L\"}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[{\"Direction\":1,\"Expression\":{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"}}},{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}]},\"Binding\":{\"Primary\":{\"Groupings\":[{\"Projections\":[1,2,3]}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}},\"Secondary\":{\"Top\":{\"Count\":60}}},\"Version\":1},\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}",
+      "body": body,
       "method": "POST"
     });
-    
+
     // Convert the response into text
     const data = await response.json();
     const ds0 = data.results[0].result.data.dsr.DS[0];
-    const states = ds0.SH[0].DM1.map(v => v.G2);
     const results = ds0.PH[0].DM0;
 
-    // Year/Month are dictionary-encoded (ValueDicts.D0/D1); each row only carries the
-    // dimensions that changed since the previous row (row.R is a bitmask of which of
-    // [year, month] repeat — the rest are consumed off row.C in order).
-    const dictionaries = [ds0.ValueDicts.D0, ds0.ValueDicts.D1];
-    const current = [undefined, undefined];
-
-    const years = {};
     var number = 0;
 
-    console.log('Fetching ' + diseaseName);
+    console.log('Fetching ' + diseaseName + ' (' + mode + ')');
 
-    results.forEach(row => {
-
-      const repeatMask = row.R || 0;
-      var ci = 0;
-      for (var d = 0; d < dictionaries.length; d++) {
-        if (!(repeatMask & (1 << d))) {
-          current[d] = dictionaries[d][row.C[ci++]];
-        }
-      }
-      const [year, month] = current;
-
-      if (!years[year]) years[year] = {};
+    if (mode === 'total') {
+      // STATE is on the PRIMARY axis: each row is one state, projected as
+      // [state, measure] with row.R flagging which of the two repeat (the
+      // measure repeats for runs of equal counts — e.g. long stretches of 0).
+      const current = [undefined, undefined];   // [state, measure]
       const cases = {};
-
-      // incrementor for each state
-      var i = 0;
-      row.X.forEach(col => {
-
-        // check if value exists, otherwise repeat
-        if (typeof col.M0 !== 'undefined') {
-          number = col.M0;
+      results.forEach(row => {
+        const repeatMask = row.R || 0;
+        var ci = 0;
+        for (var p = 0; p < 2; p++) {
+          if (!(repeatMask & (1 << p))) current[p] = row.C[ci++];
         }
-
-        cases[states[i]] = number;
-
-        i++;
+        cases[current[0]] = current[1];
       });
+      return cases;
+    }
 
-      years[year][month] = cases;
-    });
+    // 'year'/'month': STATE is on the secondary axis (the per-row X array); its
+    // labels live in SH[0].DM1 under G1 ('year') or G2 ('month').
+    const stateKey = mode === 'month' ? 'G2' : 'G1';
+    const states = ds0.SH[0].DM1.map(v => v[stateKey]);
+    const years = {};
+
+    if (mode === 'month') {
+      // Year/Month are dictionary-encoded (ValueDicts.D0/D1); each row only carries the
+      // dimensions that changed since the previous row (row.R is a bitmask of which of
+      // [year, month] repeat — the rest are consumed off row.C in order).
+      const dictionaries = [ds0.ValueDicts.D0, ds0.ValueDicts.D1];
+      const current = [undefined, undefined];
+
+      results.forEach(row => {
+
+        const repeatMask = row.R || 0;
+        var ci = 0;
+        for (var d = 0; d < dictionaries.length; d++) {
+          if (!(repeatMask & (1 << d))) {
+            current[d] = dictionaries[d][row.C[ci++]];
+          }
+        }
+        const [year, month] = current;
+
+        if (!years[year]) years[year] = {};
+        const cases = {};
+
+        // incrementor for each state
+        var i = 0;
+        row.X.forEach(col => {
+
+          // check if value exists, otherwise repeat
+          if (typeof col.M0 !== 'undefined') {
+            number = col.M0;
+          }
+
+          cases[states[i]] = number;
+
+          i++;
+        });
+
+        years[year][month] = cases;
+      });
+    } else {
+      // 'year': single primary dimension (year) — no dictionary/bitmask; the year
+      // is stored directly on the row as G0. Only measure sparsity applies.
+      results.forEach(row => {
+        const year = row.G0;
+        const cases = {};
+
+        var i = 0;
+        row.X.forEach(col => {
+          if (typeof col.M0 !== 'undefined') {
+            number = col.M0;
+          }
+          cases[states[i]] = number;
+          i++;
+        });
+
+        years[year] = cases;
+      });
+    }
 
     return years;
 
@@ -265,23 +356,30 @@ async function getCaseNumbers(capacityUri,token,diseaseName) {
 
 
 /*******************************************************************************
-  getDiseaseList(monthly)
+  getDiseaseList(mode)
 
   Entry point. Fetches the full list of disease names, then queries each one in
   turn (sequentially — the endpoint is rate-sensitive and per-disease payloads
   are small) and writes a flat { columns, rows } snapshot.
 
-  Two output modes share the same underlying month-level query:
-    monthly = false (default, run daily) → year totals per state, summing the
-              12 months of each year → data/<reportDate>_notifications.json
-    monthly = true  (run on request)     → one row per month
-              → data/<reportDate>_notifications_month.json
+  Three output modes, each querying getCaseNumbers at its own granularity and
+  writing its own file:
+    'total' (default, run daily) → all-time totals per state → one row per disease
+             → data/<reportDate>_notifications.json
+    'year'  (on request)         → one row per disease + year
+             → data/<reportDate>_notifications_year.json
+    'month' (on request)         → one row per disease + year + month
+             → data/<reportDate>_notifications_month.json
 
-  Summing months to the annual total is exact — it matches the dashboard's own
-  year figure (verified against the year-level measure), so the daily file needs
-  no separate query.
+  Each file is queried at its OWN granularity rather than derived from a finer
+  one: the dashboard masks any cell <5, so summing finer cells accumulates the
+  loss (COVID-19's lifetime total came out 70 short when summed from months, 2
+  short when summed from years). Every file is therefore the least-masked source
+  for its shape — see the getCaseNumbers header for the full rationale. A
+  consequence: the coarser files are NOT the exact sum of the finer ones (they
+  are slightly higher, and more accurate).
 *******************************************************************************/
-async function getDiseaseList(monthly) {
+async function getDiseaseList(mode) {
 
   const { capacityUri, token } = await getToken();
   const { reportDate, lastRefreshed } = await getLatestUpdateDate(capacityUri,token);
@@ -313,47 +411,53 @@ async function getDiseaseList(monthly) {
     const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);
     
     // Flat, MySQL-friendly shape: a `columns` legend plus one `rows` entry per
-    // disease/year(/month), with the eight state counts inlined in STATE_CODES
+    // disease(/year)(/month), with the eight state counts inlined in STATE_CODES
     // order. Consumable in one JSON_TABLE('$.rows[*]' ...) call.
     const output = {
       report_date: reportDate,
       last_refreshed: lastRefreshed,
-      columns: monthly
-        ? ['disease', 'year', 'month', ...STATE_CODES]
-        : ['disease', 'year', ...STATE_CODES],
+      columns: mode === 'month' ? ['disease', 'year', 'month', ...STATE_CODES]
+             : mode === 'year'  ? ['disease', 'year', ...STATE_CODES]
+             :                     ['disease', ...STATE_CODES],
       rows: []
     };
 
     for(const diseaseName of diseases){
-      const years = await getCaseNumbers(capacityUri,token,diseaseName);
-      if (!years) continue;   // query failed for this disease; skip rather than crash
+      const result = await getCaseNumbers(capacityUri,token,diseaseName,mode);
+      if (!result) continue;   // query failed for this disease; skip rather than crash
 
-      for (const [year, months] of Object.entries(years)) {
-        if (monthly) {
-          // one row per month
+      if (mode === 'month') {
+        // result[year] = { <monthName>: { <state>: count } } → one row per month
+        for (const [year, months] of Object.entries(result)) {
           for (const [monthName, cases] of Object.entries(months)) {
             const month = MONTH_NAMES.indexOf(monthName) + 1;
             output.rows.push([diseaseName, Number(year), month, ...STATE_CODES.map(s => cases[s] ?? 0)]);
           }
-        } else {
-          // sum the year's months into a single annual row per state
-          const totals = STATE_CODES.map(s =>
-            Object.values(months).reduce((sum, cases) => sum + (cases[s] ?? 0), 0));
-          output.rows.push([diseaseName, Number(year), ...totals]);
         }
+      } else if (mode === 'year') {
+        // result[year] = { <state>: count } → one row per year
+        for (const [year, cases] of Object.entries(result)) {
+          output.rows.push([diseaseName, Number(year), ...STATE_CODES.map(s => cases[s] ?? 0)]);
+        }
+      } else {
+        // total: result = { <state>: count } → a single all-time row per disease
+        output.rows.push([diseaseName, ...STATE_CODES.map(s => result[s] ?? 0)]);
       }
     }
 
-    const fname = reportDate + '_notifications' + (monthly ? '_month' : '') + '.json';
+    const suffix = mode === 'total' ? '' : '_' + mode;   // total keeps the bare name
+    const fname = reportDate + '_notifications' + suffix + '.json';
     fs.writeFileSync('data/'+ fname,JSON.stringify(output));
 
   } catch (error) {
     console.log(error);
   }
 }
-  // Run the scraper. Pass "month" for the monthly-history file; with no argument
-  // it writes the daily year-totals file (this is what the daily workflow runs).
-  //   node index.js          → data/<date>_notifications.json       (year totals)
-  //   node index.js month    → data/<date>_notifications_month.json (per month)
-  const monthly = process.argv.slice(2).includes('month');
-  getDiseaseList(monthly);
+  // Run the scraper. The first argument selects the granularity; with no argument
+  // it writes the daily all-time-totals file (this is what the daily workflow runs).
+  //   node index.js          → data/<date>_notifications.json       (all-time totals)
+  //   node index.js year     → data/<date>_notifications_year.json  (per year)
+  //   node index.js month    → data/<date>_notifications_month.json (per year+month)
+  const arg = process.argv[2];
+  const mode = (arg === 'year' || arg === 'month') ? arg : 'total';
+  getDiseaseList(mode);

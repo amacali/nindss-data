@@ -13,12 +13,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'daily = year totals; month = monthly history'
+        description: 'total = all-time totals (daily); year = per-year; month = monthly history'
         type: choice
         options:
-          - daily
+          - total
+          - year
           - month
-        default: daily
+        default: total
 
 jobs:
   archive:
@@ -35,9 +36,9 @@ jobs:
     - name: Install dependencies
       run: npm install
     - name: Run script
-      # Scheduled runs pass no input → daily year totals. Manual runs may pass
-      # "month" to (re)generate the monthly-history file instead.
-      run: node index.js ${{ github.event.inputs.mode == 'month' && 'month' || '' }}
+      # Scheduled runs pass no input → daily all-time totals. Manual runs may pass
+      # "year" or "month" to (re)generate those files instead.
+      run: node index.js ${{ github.event.inputs.mode || 'total' }}
       timeout-minutes: 10
     - name: Push data
       run: |
