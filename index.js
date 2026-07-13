@@ -1,9 +1,12 @@
 /*******************************************************************************
   NINDSS notification scraper
 
-  Pulls monthly notifiable-disease notification counts for Australia from the
-  NINDSS PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/) and
-  writes a daily snapshot to data/<report_date>_notifications.json.
+  Pulls notifiable-disease notification counts for Australia from the NINDSS
+  PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/) and writes a
+  snapshot to data/<report_date>_notifications*.json. Two modes:
+    node index.js         → year totals per state (daily)
+    node index.js month   → per-month breakdown   (_month.json, on request)
+  Both derive from the same month-level query; the daily file just sums months.
 
   There is no public NINDSS API. Instead this reverse-engineers the embedded
   PowerBI report the dashboard renders. The flow is:
@@ -262,13 +265,23 @@ async function getCaseNumbers(capacityUri,token,diseaseName) {
 
 
 /*******************************************************************************
-  getDiseaseList()
+  getDiseaseList(monthly)
 
   Entry point. Fetches the full list of disease names, then queries each one in
   turn (sequentially — the endpoint is rate-sensitive and per-disease payloads
-  are small) and writes the assembled snapshot to data/<reportDate>_notifications.json.
+  are small) and writes a flat { columns, rows } snapshot.
+
+  Two output modes share the same underlying month-level query:
+    monthly = false (default, run daily) → year totals per state, summing the
+              12 months of each year → data/<reportDate>_notifications.json
+    monthly = true  (run on request)     → one row per month
+              → data/<reportDate>_notifications_month.json
+
+  Summing months to the annual total is exact — it matches the dashboard's own
+  year figure (verified against the year-level measure), so the daily file needs
+  no separate query.
 *******************************************************************************/
-async function getDiseaseList() {
+async function getDiseaseList(monthly) {
 
   const { capacityUri, token } = await getToken();
   const { reportDate, lastRefreshed } = await getLatestUpdateDate(capacityUri,token);
@@ -300,32 +313,47 @@ async function getDiseaseList() {
     const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);
     
     // Flat, MySQL-friendly shape: a `columns` legend plus one `rows` entry per
-    // disease/year/month, with the eight state counts inlined in STATE_CODES
+    // disease/year(/month), with the eight state counts inlined in STATE_CODES
     // order. Consumable in one JSON_TABLE('$.rows[*]' ...) call.
     const output = {
       report_date: reportDate,
       last_refreshed: lastRefreshed,
-      columns: ['disease', 'year', 'month', ...STATE_CODES],
+      columns: monthly
+        ? ['disease', 'year', 'month', ...STATE_CODES]
+        : ['disease', 'year', ...STATE_CODES],
       rows: []
     };
 
     for(const diseaseName of diseases){
       const years = await getCaseNumbers(capacityUri,token,diseaseName);
       if (!years) continue;   // query failed for this disease; skip rather than crash
+
       for (const [year, months] of Object.entries(years)) {
-        for (const [monthName, cases] of Object.entries(months)) {
-          const month = MONTH_NAMES.indexOf(monthName) + 1;
-          output.rows.push([diseaseName, Number(year), month, ...STATE_CODES.map(s => cases[s] ?? 0)]);
+        if (monthly) {
+          // one row per month
+          for (const [monthName, cases] of Object.entries(months)) {
+            const month = MONTH_NAMES.indexOf(monthName) + 1;
+            output.rows.push([diseaseName, Number(year), month, ...STATE_CODES.map(s => cases[s] ?? 0)]);
+          }
+        } else {
+          // sum the year's months into a single annual row per state
+          const totals = STATE_CODES.map(s =>
+            Object.values(months).reduce((sum, cases) => sum + (cases[s] ?? 0), 0));
+          output.rows.push([diseaseName, Number(year), ...totals]);
         }
       }
     }
 
-    const fname = reportDate + '_notifications.json';
+    const fname = reportDate + '_notifications' + (monthly ? '_month' : '') + '.json';
     fs.writeFileSync('data/'+ fname,JSON.stringify(output));
 
   } catch (error) {
     console.log(error);
   }
 }
-  // Run the scraper. Invoked directly by the daily GitHub Actions workflow.
-  getDiseaseList();
+  // Run the scraper. Pass "month" for the monthly-history file; with no argument
+  // it writes the daily year-totals file (this is what the daily workflow runs).
+  //   node index.js          → data/<date>_notifications.json       (year totals)
+  //   node index.js month    → data/<date>_notifications_month.json (per month)
+  const monthly = process.argv.slice(2).includes('month');
+  getDiseaseList(monthly);
