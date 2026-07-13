@@ -12,15 +12,22 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    # Legacy _cases.json pipeline. Runs from THIS branch (dev-v1), not main —
+    # main now holds the newer three-mode scraper. Dispatch this workflow on the
+    # dev-v1 branch (Actions → Run workflow → Branch: dev-v1).
+    # @v5 actions run on node24 (clears the Node-20 deprecation warning); Node 22
+    # is required because undici (via cheerio) uses the `File` global, absent on
+    # Node 18 ("ReferenceError: File is not defined").
+    - uses: actions/checkout@v5
       with:
         fetch-depth: 1
-        ref: main
-    - uses: actions/setup-node@v3
+        ref: dev-v1
+    - uses: actions/setup-node@v5
       with:
-        node-version: 18    
+        node-version: 22
     - name: Install dependencies
-      run: npm install
+      # --loglevel=error hides harmless transitive-dep deprecation warnings.
+      run: npm install --loglevel=error
     - name: Run script
       run: node index.js
       timeout-minutes: 10
