@@ -12,9 +12,8 @@
   "license": "ISC",
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
-    "fs": "^0.0.1-security",
     "moment": "^2.29.4",
-    "moment-timezone": "^0.5.43",
+    "moment-timezone": "^0.6.2",
     "node-fetch": "^3.3.2"
   }
 }
