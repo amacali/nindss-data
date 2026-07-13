@@ -1,4 +1,29 @@
-  
+/*******************************************************************************
+  NINDSS notification scraper
+
+  Pulls monthly notifiable-disease notification counts for Australia from the
+  NINDSS PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/) and
+  writes a daily snapshot to data/<report_date>_notifications.json.
+
+  There is no public NINDSS API. Instead this reverse-engineers the embedded
+  PowerBI report the dashboard renders. The flow is:
+
+    getConfig()          scrape the page → decode the PowerBI embed config
+      → getToken()       embed token → short-lived MWCToken + query endpoint
+        → getLatestUpdateDate()  when the data was last refreshed
+        → getDiseaseList()       every disease name, then per disease:
+          → getCaseNumbers()     year/month/state notification counts
+
+  All data queries POST hand-built DAX (SemanticQueryDataShapeCommand) bodies
+  to the PowerBI query endpoint. These bodies are opaque strings copied from
+  the dashboard's own network traffic — the DatasetId, ReportId, VisualId and
+  entity/column names inside them are what break if the dashboard changes.
+
+  Output schema (see README.md):
+    { report_date, last_refreshed, data: { <disease>: { <year>: { <month>: {
+        <state code | "AUS">: <count> } } } } }
+*******************************************************************************/
+
   // NPM packages that we installed
   import * as cheerio from 'cheerio';
   import fetch from 'node-fetch';
@@ -6,8 +31,17 @@
   import moment from 'moment';
   import 'moment-timezone';
 
+  // Canonical column order for the flat output rows. States exclude AUS (the
+  // per-disease query filters it out); month names map to 1-12 by position.
+  const STATE_CODES = ['ACT','NSW','NT','QLD','SA','TAS','VIC','WA'];
+  const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
 /*******************************************************************************
-  getEmbedConfig()
+  getConfig()
+
+  Fetches the dashboard HTML and pulls the base64 `embedconfig` attribute off
+  the <div class="powerbi"> element, decoding it to the PowerBI embed config
+  (report id + embed token). Returns the parsed config object.
 *******************************************************************************/
   async function getConfig() {
 
@@ -30,6 +64,10 @@
 
 /*******************************************************************************
   getToken()
+
+  Trades the (longer-lived) embed token for the short-lived MWCToken and the
+  `capacityUri` that DAX queries must be POSTed to. Returns
+  { reportId, token, capacityUri }.
 *******************************************************************************/
   async function getToken() {
 
@@ -60,13 +98,11 @@
 
       // Convert the response into text
       const data = await response.json();
-      const params = [];
-      params.push({
+      return {
         reportId: reportId,
         token: data.exploration.mwcToken,
         capacityUri: data.exploration.capacityUri
-      })
-      return params;
+      };
 
     } catch (error) {
       console.log(error);
@@ -75,6 +111,12 @@
 
 /*******************************************************************************
   getLatestUpdateDate()
+
+  Reads the DataRefreshAEST table — the same value shown as "Last refreshed on"
+  on the dashboard — and returns:
+    { reportDate:    "YYYYMMDD" (GMT), used for the filename/grouping key,
+      lastRefreshed: full ISO timestamp in Australian Eastern time }
+  Both derive from the same epoch; reportDate is just the truncated form.
 *******************************************************************************/
   async function getLatestUpdateDate(capacityUri,token) {
 
@@ -115,6 +157,29 @@
 
 /*******************************************************************************
   getCaseNumbers()
+
+  Queries per-year, per-month, per-state notification counts for a single
+  disease and returns them nested as { <year>: { <month>: { <state>: count } } }.
+
+  Decoding the PowerBI response involves two SEPARATE sparse-encoding schemes
+  that are easy to confuse:
+
+    1. Row sparsity (the DM0 rows). Because more than one dimension is
+       projected (year + month), dimension values are dictionary-encoded:
+       ValueDicts.D0 holds the year strings, D1 the month names, and each row
+       stores integer indexes into them via row.C. To save bytes a row omits
+       any leading dimension that is unchanged from the previous row; row.R is
+       a bitmask flagging which of [year, month] repeat, so only the *changed*
+       dimensions are present in row.C (consumed left-to-right). We carry the
+       last-seen value forward in `current` to fill the gaps.
+
+    2. Measure sparsity (the row.X array, one entry per state). A state's M0 is
+       likewise omitted when it repeats the previous state's value, so `number`
+       carries forward — see "check if value exists, otherwise repeat" below.
+
+  NOTE: the state labels live on the secondary axis as G2 (not G1). Projecting
+  an extra hierarchy level shifts every later dimension's G-number, so this key
+  must move in lock-step with the query's Select list.
 *******************************************************************************/
 async function getCaseNumbers(capacityUri,token,diseaseName) {
 
@@ -198,12 +263,14 @@ async function getCaseNumbers(capacityUri,token,diseaseName) {
 
 /*******************************************************************************
   getDiseaseList()
+
+  Entry point. Fetches the full list of disease names, then queries each one in
+  turn (sequentially — the endpoint is rate-sensitive and per-disease payloads
+  are small) and writes the assembled snapshot to data/<reportDate>_notifications.json.
 *******************************************************************************/
 async function getDiseaseList() {
-  
-  const params = await getToken();
-  const capacityUri = params[0].capacityUri;
-  const token = params[0].token;
+
+  const { capacityUri, token } = await getToken();
   const { reportDate, lastRefreshed } = await getLatestUpdateDate(capacityUri,token);
 
   try {
@@ -232,14 +299,25 @@ async function getDiseaseList() {
     const data = await response.json();
     const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);
     
+    // Flat, MySQL-friendly shape: a `columns` legend plus one `rows` entry per
+    // disease/year/month, with the eight state counts inlined in STATE_CODES
+    // order. Consumable in one JSON_TABLE('$.rows[*]' ...) call.
     const output = {
       report_date: reportDate,
       last_refreshed: lastRefreshed,
-      data: {}
+      columns: ['disease', 'year', 'month', ...STATE_CODES],
+      rows: []
     };
 
     for(const diseaseName of diseases){
-      output.data[diseaseName] = await getCaseNumbers(capacityUri,token,diseaseName);
+      const years = await getCaseNumbers(capacityUri,token,diseaseName);
+      if (!years) continue;   // query failed for this disease; skip rather than crash
+      for (const [year, months] of Object.entries(years)) {
+        for (const [monthName, cases] of Object.entries(months)) {
+          const month = MONTH_NAMES.indexOf(monthName) + 1;
+          output.rows.push([diseaseName, Number(year), month, ...STATE_CODES.map(s => cases[s] ?? 0)]);
+        }
+      }
     }
 
     const fname = reportDate + '_notifications.json';
@@ -249,5 +327,5 @@ async function getDiseaseList() {
     console.log(error);
   }
 }
-  // getCaseNumbers('COVID-19');
+  // Run the scraper. Invoked directly by the daily GitHub Actions workflow.
   getDiseaseList();
