@@ -39,7 +39,10 @@ jobs:
         # which does not exist on Node 18 ("ReferenceError: File is not defined").
         node-version: 22
     - name: Install dependencies
-      run: npm install
+      # --loglevel=error silences npm's harmless transitive-dep deprecation
+      # warnings (whatwg-encoding, node-domexception — pulled in under cheerio);
+      # real errors still surface.
+      run: npm install --loglevel=error
     - name: Run script
       # Scheduled runs pass no input → daily all-time totals. Manual runs may pass
       # "year" or "month" to (re)generate those files instead.
