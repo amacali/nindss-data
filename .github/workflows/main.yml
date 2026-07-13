@@ -26,11 +26,14 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
+    # the "Node.js 20 is deprecated … forced to run on Node.js 24" runner warning
+    # (Node 20 EOL Apr 2026; runners default to Node 24 on 16 Jun 2026).
+    - uses: actions/checkout@v5
       with:
         fetch-depth: 1
         ref: main
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         # Node 20+ required: undici (via cheerio) references the `File` global,
         # which does not exist on Node 18 ("ReferenceError: File is not defined").
