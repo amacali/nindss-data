@@ -4,7 +4,12 @@ on:
   #   branches:
   #     - main
   schedule:
-    - cron: '0 21 * * *'
+    # Times are UTC (GitHub cron has no DST). Anchored to AEST (UTC+10):
+    # 08:00 and 16:00 AEST. During AEDT (summer) both shift ~1h later.
+    # The 16:00 run is a self-healing backup — if the morning run already
+    # committed today's data it regenerates an identical file and no-ops.
+    - cron: '30 22 * * *'   # 08:00 AEST (previous UTC day)
+    - cron: '30 6 * * *'    # 16:00 AEST
   workflow_dispatch:
     inputs:
       mode:
