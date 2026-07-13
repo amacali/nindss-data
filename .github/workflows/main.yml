@@ -26,13 +26,15 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 1
         ref: main
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@v4
       with:
-        node-version: 18    
+        # Node 20+ required: undici (via cheerio) references the `File` global,
+        # which does not exist on Node 18 ("ReferenceError: File is not defined").
+        node-version: 22
     - name: Install dependencies
       run: npm install
     - name: Run script
