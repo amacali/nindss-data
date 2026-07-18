@@ -6,12 +6,28 @@
   snapshot to data/<report_date>_notifications*.json. Three modes:
     node index.js            → all-time totals per state (daily, default)
     node index.js all-time   → same as above, named explicitly
-    node index.js year       → per-year breakdown  (_year.json,  on request)
-    node index.js month      → per-month breakdown (_month.json, on request)
+    node index.js year [Y|all] → cumulative-per-year breakdown (data/year/, on request)
+    node index.js month      → per-month breakdown            (_month.json, on request)
   Each mode queries at its own granularity rather than summing a finer file:
   the dashboard masks cells <5, so summing accumulates the loss (see
   getCaseNumbers in powerbi.js). Coarser files are the least-masked source for
   their shape.
+
+  'year' mode has its own build path (buildYearOutput, below) writing entirely
+  under data/year/ — NOT data/<reportDate>_notifications*.json like the other
+  two modes. It writes one file per DAX_Year (data/year/<year>_notifications.json)
+  plus a combined snapshot (data/year/<reportDate>_notifications.json) — see
+  buildYearOutput's header comment for how those two coexist in one directory
+  without colliding. By default it only fetches/refreshes the CURRENT year
+  (cheap, ~1 request/disease); an optional third CLI arg can target a specific
+  past year to backfill, or 'all' to rebuild the full history (~2.4k requests)
+  — see getDiseaseList's CLI parsing. No year is ever reused from cache once
+  targeted — every targeted year is always fetched live. State counts are
+  CUMULATIVE totals through that year (DAX_Year <= year), not per-year deltas;
+  per-year deltas are computed downstream in the database. This does NOT touch
+  legacy.js — legacy.js's own 'year'-mode query (via getCaseNumbers) is
+  untouched and stays exactly as it was: it serves an old site whose format
+  must not change.
 
   On 'all-time' mode (the daily run) this also writes the deprecated
   data/<report_date>_cases.json — see legacy.js, slated for removal.
@@ -25,8 +41,72 @@
 
   import fetch from 'node-fetch';
   import fs from 'fs';
-  import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers } from './powerbi.js';
+  import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers, getYearCumulativeTotal } from './powerbi.js';
   import { writeLegacyCases } from './legacy.js';
+
+  // Matches the DAX_Year >= 1990 floor filter already baked into every powerbi.js query.
+  const YEAR_FLOOR = 1990;
+  const YEAR_CACHE_DIR = 'data/year';
+
+/*******************************************************************************
+  buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch)
+
+  Writes one file per DAX_Year in `yearsToFetch` under
+  data/year/<year>_notifications.json — cumulative per-state totals for
+  DAX_Year <= year across every disease (see getYearCumulativeTotal in
+  powerbi.js for why cumulative rather than a single year's grouped,
+  more-often-masked count). Every requested year is fetched live and its cache
+  file overwritten — no reuse-if-exists caching.
+
+  `yearsToFetch` controls scope/cost per run (see getDiseaseList's CLI parsing):
+    [currentYear]                 → default, ~1 request per disease (~67)
+    [aSpecificYear]               → backfill/refresh just that one year
+    [YEAR_FLOOR..currentYear]     → 'all': full history rebuild (~2.4k requests)
+
+  Afterwards, data/year/<reportDate>_notifications.json is rebuilt from EVERY
+  per-year cache file on disk (not just the year(s) fetched this run), so the
+  combined snapshot always reflects the fullest known history at no extra
+  request cost — it's just concatenating local files. This combined file lives
+  in the SAME data/year/ directory as the per-year caches, distinguished only
+  by filename: per-year caches are named by a bare 4-digit year (<year>_
+  notifications.json), the combined file by the full 8-digit reportDate
+  (<reportDate>_notifications.json) — the cache scan below matches strictly
+  on the 4-digit form so it never picks up the combined file as a "year".
+*******************************************************************************/
+async function buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch) {
+  fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
+
+  for (const year of yearsToFetch) {
+    const yearFile = { year, columns: ['disease', ...STATE_CODES], rows: [] };
+    for (const diseaseName of diseases) {
+      const cumulative = await getYearCumulativeTotal(capacityUri, token, diseaseName, year);
+      if (!cumulative) continue;   // query failed for this disease; skip rather than crash
+      yearFile.rows.push([diseaseName, ...STATE_CODES.map(s => cumulative[s] ?? 0)]);
+    }
+    fs.writeFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
+  }
+
+  const output = {
+    report_date: reportDate,
+    last_refreshed: lastRefreshed,
+    columns: ['disease', 'year', ...STATE_CODES],
+    rows: []
+  };
+
+  const cachedYears = fs.readdirSync(YEAR_CACHE_DIR)
+    .filter(f => /^\d{4}_notifications\.json$/.test(f))
+    .map(f => Number(f.split('_')[0]))
+    .sort((a, b) => a - b);
+
+  for (const year of cachedYears) {
+    const yearFile = JSON.parse(fs.readFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', 'utf8'));
+    for (const [diseaseName, ...counts] of yearFile.rows) {
+      output.rows.push([diseaseName, year, ...counts]);
+    }
+  }
+
+  fs.writeFileSync(YEAR_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
+}
 
 /*******************************************************************************
   getDiseaseList(mode)
@@ -39,8 +119,8 @@
   writing its own file:
     'all-time' (default, run daily) → all-time totals per state → one row per disease
              → data/<reportDate>_notifications.json
-    'year'  (on request)         → one row per disease + year
-             → data/<reportDate>_notifications_year.json
+    'year'  (on request)         → one row per disease + year, CUMULATIVE state counts through that year
+             → data/year/<reportDate>_notifications.json (delegated to buildYearOutput — see above)
     'month' (on request)         → one row per disease + year + month
              → data/<reportDate>_notifications_month.json
 
@@ -52,7 +132,7 @@
   consequence: the coarser files are NOT the exact sum of the finer ones (they
   are slightly higher, and more accurate).
 *******************************************************************************/
-async function getDiseaseList(mode) {
+async function getDiseaseList(mode, yearArg) {
 
   const { capacityUri, token } = await getToken();
   const { reportDate, lastRefreshed } = await getLatestUpdateDate(capacityUri,token);
@@ -83,14 +163,26 @@ async function getDiseaseList(mode) {
     const data = await response.json();
     const diseases = data.results[0].result.data.dsr.DS[0].PH[0].DM0.map(v => v.G0);
 
+    // 'year' mode has its own build path — see buildYearOutput. Scope defaults
+    // to the current (still-accumulating) year; yearArg can target a specific
+    // past year to backfill, or 'all' to rebuild the full history.
+    if (mode === 'year') {
+      const currentYear = Number(reportDate.slice(0, 4));
+      const yearsToFetch = yearArg === 'all'
+        ? Array.from({ length: currentYear - YEAR_FLOOR + 1 }, (_, i) => YEAR_FLOOR + i)
+        : yearArg ? [Number(yearArg)]
+        : [currentYear];
+      await buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch);
+      return;
+    }
+
     // Flat, MySQL-friendly shape: a `columns` legend plus one `rows` entry per
-    // disease(/year)(/month), with the eight state counts inlined in STATE_CODES
+    // disease(/month), with the eight state counts inlined in STATE_CODES
     // order. Consumable in one JSON_TABLE('$.rows[*]' ...) call.
     const output = {
       report_date: reportDate,
       last_refreshed: lastRefreshed,
       columns: mode === 'month' ? ['disease', 'year', 'month', ...STATE_CODES]
-             : mode === 'year'  ? ['disease', 'year', ...STATE_CODES]
              :                     ['disease', ...STATE_CODES],
       rows: []
     };
@@ -106,11 +198,6 @@ async function getDiseaseList(mode) {
             const month = MONTH_NAMES.indexOf(monthName) + 1;
             output.rows.push([diseaseName, Number(year), month, ...STATE_CODES.map(s => cases[s] ?? 0)]);
           }
-        }
-      } else if (mode === 'year') {
-        // result[year] = { <state>: count } → one row per year
-        for (const [year, cases] of Object.entries(result)) {
-          output.rows.push([diseaseName, Number(year), ...STATE_CODES.map(s => cases[s] ?? 0)]);
         }
       } else {
         // all-time: result = { <state>: count } → a single all-time row per disease
@@ -133,11 +220,14 @@ async function getDiseaseList(mode) {
 }
   // Run the scraper. The first argument selects the granularity; with no argument
   // (or 'all-time') it writes the daily all-time-totals file (this is what the
-  // daily workflow runs).
-  //   node index.js            → data/<date>_notifications.json       (all-time totals)
-  //   node index.js all-time   → same as above, named explicitly
-  //   node index.js year       → data/<date>_notifications_year.json  (per year)
-  //   node index.js month      → data/<date>_notifications_month.json (per year+month)
+  // daily workflow runs). For 'year', a second argument controls scope:
+  //   node index.js                → data/<date>_notifications.json       (all-time totals)
+  //   node index.js all-time       → same as above, named explicitly
+  //   node index.js year           → data/year/<date>_notifications.json  (current year only, default)
+  //   node index.js year 2019      → backfill/refresh just 2019 (data/year/2019_notifications.json)
+  //   node index.js year all       → rebuild full history (all years, YEAR_FLOOR..current)
+  //   node index.js month          → data/<date>_notifications_month.json (per year+month)
   const arg = process.argv[2];
   const mode = (arg === 'year' || arg === 'month') ? arg : 'all-time';
-  getDiseaseList(mode);
+  const yearArg = process.argv[3];
+  getDiseaseList(mode, yearArg);
