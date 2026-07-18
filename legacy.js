@@ -4,7 +4,7 @@
   Reshapes year-granularity notification counts (via getCaseNumbers(...,'year'))
   into the pre-rewrite flat-array format: one record per disease/year/state,
   kept only for consumers still on the old schema. Written alongside the current
-  _notifications.json on 'total' mode (daily) runs — see index.js.
+  _notifications.json on 'all-time' mode (daily) runs — see index.js.
 
   This file is the entire legacy surface: deleting it and its one call site in
   index.js removes the legacy output cleanly.

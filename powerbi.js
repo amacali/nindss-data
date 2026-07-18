@@ -153,9 +153,9 @@
 
   Queries per-state notification counts for a single disease and returns them
   nested by period. `mode` picks BOTH the query granularity and the return shape:
-    'total' → all-time per-state counts  → { <state>: count }
-    'year'  → per-year per-state counts  → { <year>: { <state>: count } }
-    'month' → per-year per-month counts  → { <year>: { <month>: { <state>: count } } }
+    'all-time' → all-time per-state counts  → { <state>: count }
+    'year'     → per-year per-state counts  → { <year>: { <state>: count } }
+    'month'    → per-year per-month counts  → { <year>: { <month>: { <state>: count } } }
 
   WHY THREE GRANULARITIES instead of always querying months and summing up:
   the dashboard masks any displayed cell whose count is <5. Masking bites at
@@ -163,13 +163,13 @@
   a cell that is <5 per month is usually >=5 per year, and a state's all-time
   total is masked only if it is genuinely <5 forever. Each mode is therefore the
   LEAST-masked source for its own shape (measured against COVID-19's true
-  national lifetime total): 'total' = 12,302,011, 'year' summed = 12,302,009,
+  national lifetime total): 'all-time' = 12,302,011, 'year' summed = 12,302,009,
   'month' summed = 12,301,939. Query each level directly rather than deriving a
   coarser file from a finer one.
 
   TWO RESPONSE LAYOUTS, because PowerBI rejects a secondary axis with no primary
   ("SecondaryGroupsWithoutPrimary"):
-    - 'total' has no period dimension, so STATE must go on the PRIMARY axis: each
+    - 'all-time' has no period dimension, so STATE must go on the PRIMARY axis: each
       DM0 row is one state, C = [state, measure]. There is no secondary axis / X
       array and no SH state list.
     - 'year'/'month' keep STATE on the SECONDARY axis (the X array, one entry per
@@ -181,7 +181,7 @@
     1. Row sparsity (the DM0 rows, row.R bitmask). Wherever more than one value
        is projected onto a row, row.R flags which projections REPEAT the previous
        row, so only the *changed* ones appear in row.C (consumed left-to-right);
-       the rest carry forward. This drives: 'total' rows over [state, measure];
+       the rest carry forward. This drives: 'all-time' rows over [state, measure];
        and 'month' rows over dictionary-encoded [year, month] (ValueDicts.D0/D1).
        'year' projects a single primary dimension, so the year is stored directly
        as row.G0 with no dictionary/bitmask.
@@ -199,9 +199,9 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
 
   // The three queries differ only in which period dimensions are projected and
   // how STATE is bound. Assemble the varying pieces per mode:
-  //   'total' → Select [STATE, Measure];        Primary [0,1], no Secondary
-  //   'year'  → Select [STATE, Year, Measure];  Primary [1,2], Secondary [STATE]
-  //   'month' → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
+  //   'all-time' → Select [STATE, Measure];        Primary [0,1], no Secondary
+  //   'year'     → Select [STATE, Year, Measure];  Primary [1,2], Secondary [STATE]
+  //   'month'    → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
   const SEL_YEAR = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"}";
   const SEL_MONTH = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Month Name\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Month Name\"}";
   const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
@@ -215,11 +215,11 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
                      : "";
   const primaryProjections = mode === 'month' ? "[1,2,3]"
                            : mode === 'year'  ? "[1,2]"
-                           : "[0,1]";              // total: [STATE, measure]
-  const binding = mode === 'total'
+                           : "[0,1]";              // all-time: [STATE, measure]
+  const binding = mode === 'all-time'
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
     : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}},\"Secondary\":{\"Top\":{\"Count\":60}}},\"Version\":1}";
-  const orderBy = mode === 'total' ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
+  const orderBy = mode === 'all-time' ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
 
   const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Comparison\":{\"ComparisonKind\":1,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"1990L\"}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
 
@@ -254,7 +254,7 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
 
     console.log('Fetching ' + diseaseName + ' (' + mode + ')');
 
-    if (mode === 'total') {
+    if (mode === 'all-time') {
       // STATE is on the PRIMARY axis: each row is one state, projected as
       // [state, measure] with row.R flagging which of the two repeat (the
       // measure repeats for runs of equal counts — e.g. long stretches of 0).

@@ -4,15 +4,16 @@
   Pulls notifiable-disease notification counts for Australia from the NINDSS
   PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/) and writes a
   snapshot to data/<report_date>_notifications*.json. Three modes:
-    node index.js         → all-time totals per state (daily, default)
-    node index.js year    → per-year breakdown  (_year.json,  on request)
-    node index.js month   → per-month breakdown (_month.json, on request)
+    node index.js            → all-time totals per state (daily, default)
+    node index.js all-time   → same as above, named explicitly
+    node index.js year       → per-year breakdown  (_year.json,  on request)
+    node index.js month      → per-month breakdown (_month.json, on request)
   Each mode queries at its own granularity rather than summing a finer file:
   the dashboard masks cells <5, so summing accumulates the loss (see
   getCaseNumbers in powerbi.js). Coarser files are the least-masked source for
   their shape.
 
-  On 'total' mode (the daily run) this also writes the deprecated
+  On 'all-time' mode (the daily run) this also writes the deprecated
   data/<report_date>_cases.json — see legacy.js, slated for removal.
 
   PowerBI query/decoding logic (getConfig/getToken/getLatestUpdateDate/
@@ -36,7 +37,7 @@
 
   Three output modes, each querying getCaseNumbers at its own granularity and
   writing its own file:
-    'total' (default, run daily) → all-time totals per state → one row per disease
+    'all-time' (default, run daily) → all-time totals per state → one row per disease
              → data/<reportDate>_notifications.json
     'year'  (on request)         → one row per disease + year
              → data/<reportDate>_notifications_year.json
@@ -112,17 +113,17 @@ async function getDiseaseList(mode) {
           output.rows.push([diseaseName, Number(year), ...STATE_CODES.map(s => cases[s] ?? 0)]);
         }
       } else {
-        // total: result = { <state>: count } → a single all-time row per disease
+        // all-time: result = { <state>: count } → a single all-time row per disease
         output.rows.push([diseaseName, ...STATE_CODES.map(s => result[s] ?? 0)]);
       }
     }
 
-    const suffix = mode === 'total' ? '' : '_' + mode;   // total keeps the bare name
+    const suffix = mode === 'all-time' ? '' : '_' + mode;   // all-time keeps the bare name
     const fname = reportDate + '_notifications' + suffix + '.json';
     fs.writeFileSync('data/'+ fname,JSON.stringify(output));
 
-    // Deprecated legacy output — daily 'total' runs only. See legacy.js.
-    if (mode === 'total') {
+    // Deprecated legacy output — daily 'all-time' runs only. See legacy.js.
+    if (mode === 'all-time') {
       await writeLegacyCases(capacityUri, token, reportDate, diseases);
     }
 
@@ -131,10 +132,12 @@ async function getDiseaseList(mode) {
   }
 }
   // Run the scraper. The first argument selects the granularity; with no argument
-  // it writes the daily all-time-totals file (this is what the daily workflow runs).
-  //   node index.js          → data/<date>_notifications.json       (all-time totals)
-  //   node index.js year     → data/<date>_notifications_year.json  (per year)
-  //   node index.js month    → data/<date>_notifications_month.json (per year+month)
+  // (or 'all-time') it writes the daily all-time-totals file (this is what the
+  // daily workflow runs).
+  //   node index.js            → data/<date>_notifications.json       (all-time totals)
+  //   node index.js all-time   → same as above, named explicitly
+  //   node index.js year       → data/<date>_notifications_year.json  (per year)
+  //   node index.js month      → data/<date>_notifications_month.json (per year+month)
   const arg = process.argv[2];
-  const mode = (arg === 'year' || arg === 'month') ? arg : 'total';
+  const mode = (arg === 'year' || arg === 'month') ? arg : 'all-time';
   getDiseaseList(mode);

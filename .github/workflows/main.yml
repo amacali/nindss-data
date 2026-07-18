@@ -13,13 +13,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'total = all-time totals (daily); year = per-year; month = monthly history'
+        description: 'all-time = all-time totals (daily); year = per-year; month = monthly history'
         type: choice
         options:
-          - total
+          - all-time
           - year
           - month
-        default: total
+        default: all-time
 
 jobs:
   archive:
@@ -46,7 +46,7 @@ jobs:
     - name: Run script
       # Scheduled runs pass no input → daily all-time totals. Manual runs may pass
       # "year" or "month" to (re)generate those files instead.
-      run: node index.js ${{ github.event.inputs.mode || 'total' }}
+      run: node index.js ${{ github.event.inputs.mode || 'all-time' }}
       timeout-minutes: 10
     - name: Push data
       run: |
