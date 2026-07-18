@@ -54,7 +54,7 @@
   const MONTH_CACHE_DIR = 'data/month';
 
 /*******************************************************************************
-  buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch)
+  buildYearOutput(capacityUri, token, diseases, yearsToFetch)
 
   Writes one file per DAX_Year in `yearsToFetch` under
   data/year/<year>_notifications.json — cumulative per-state totals for
@@ -67,18 +67,8 @@
     [currentYear]                 → default, ~1 request per disease (~67)
     [aSpecificYear]               → backfill/refresh just that one year
     [YEAR_FLOOR..currentYear]     → 'all': full history rebuild (~2.4k requests)
-
-  Afterwards, data/year/<reportDate>_notifications.json is rebuilt from EVERY
-  per-year cache file on disk (not just the year(s) fetched this run), so the
-  combined snapshot always reflects the fullest known history at no extra
-  request cost — it's just concatenating local files. This combined file lives
-  in the SAME data/year/ directory as the per-year caches, distinguished only
-  by filename: per-year caches are named by a bare 4-digit year (<year>_
-  notifications.json), the combined file by the full 8-digit reportDate
-  (<reportDate>_notifications.json) — the cache scan below matches strictly
-  on the 4-digit form so it never picks up the combined file as a "year".
 *******************************************************************************/
-async function buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch) {
+async function buildYearOutput(capacityUri, token, diseases, yearsToFetch) {
   fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
 
   for (const year of yearsToFetch) {
@@ -90,27 +80,6 @@ async function buildYearOutput(capacityUri, token, diseases, reportDate, lastRef
     }
     fs.writeFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
   }
-
-  const output = {
-    report_date: reportDate,
-    last_refreshed: lastRefreshed,
-    columns: ['disease', 'year', ...STATE_CODES],
-    rows: []
-  };
-
-  const cachedYears = fs.readdirSync(YEAR_CACHE_DIR)
-    .filter(f => /^\d{4}_notifications\.json$/.test(f))
-    .map(f => Number(f.split('_')[0]))
-    .sort((a, b) => a - b);
-
-  for (const year of cachedYears) {
-    const yearFile = JSON.parse(fs.readFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', 'utf8'));
-    for (const [diseaseName, ...counts] of yearFile.rows) {
-      output.rows.push([diseaseName, year, ...counts]);
-    }
-  }
-
-  fs.writeFileSync(YEAR_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
 }
 
 /*******************************************************************************
@@ -151,22 +120,15 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
 }
 
 /*******************************************************************************
-  buildMonthOutput(capacityUri, token, diseases, reportDate, lastRefreshed, periodsToFetch)
+  buildMonthOutput(capacityUri, token, diseases, periodsToFetch)
 
   Writes one file per (year, month) in `periodsToFetch` under
   data/month/<YYYYMM>_notifications.json — cumulative per-state totals through
   that month across every disease, via getMonthCumulativeTotal in powerbi.js.
   Every requested period is fetched live and its cache file overwritten — no
   reuse-if-exists caching, same as buildYearOutput.
-
-  Afterwards, data/month/<reportDate>_notifications.json is rebuilt from EVERY
-  per-period cache file on disk (not just the period(s) fetched this run), so
-  the combined snapshot always reflects the fullest known history at no extra
-  request cost. Same directory-collision guard as buildYearOutput: per-period
-  caches are named by the 6-digit YYYYMM form, the combined file by the full
-  8-digit reportDate — the cache scan matches strictly on the 6-digit form.
 *******************************************************************************/
-async function buildMonthOutput(capacityUri, token, diseases, reportDate, lastRefreshed, periodsToFetch) {
+async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch) {
   fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
 
   for (const { year, month } of periodsToFetch) {
@@ -179,27 +141,6 @@ async function buildMonthOutput(capacityUri, token, diseases, reportDate, lastRe
     const period = String(year) + String(month).padStart(2, '0');
     fs.writeFileSync(MONTH_CACHE_DIR + '/' + period + '_notifications.json', JSON.stringify(periodFile));
   }
-
-  const output = {
-    report_date: reportDate,
-    last_refreshed: lastRefreshed,
-    columns: ['disease', 'year', 'month', ...STATE_CODES],
-    rows: []
-  };
-
-  const cachedPeriods = fs.readdirSync(MONTH_CACHE_DIR)
-    .filter(f => /^\d{6}_notifications\.json$/.test(f))
-    .map(f => f.split('_')[0])
-    .sort();
-
-  for (const period of cachedPeriods) {
-    const periodFile = JSON.parse(fs.readFileSync(MONTH_CACHE_DIR + '/' + period + '_notifications.json', 'utf8'));
-    for (const [diseaseName, ...counts] of periodFile.rows) {
-      output.rows.push([diseaseName, periodFile.year, periodFile.month, ...counts]);
-    }
-  }
-
-  fs.writeFileSync(MONTH_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
 }
 
 /*******************************************************************************
@@ -253,7 +194,7 @@ async function getDiseaseList(mode, scopeArg) {
         ? Array.from({ length: currentYear - YEAR_FLOOR + 1 }, (_, i) => YEAR_FLOOR + i)
         : scopeArg ? [Number(scopeArg)]
         : [currentYear];
-      await buildYearOutput(capacityUri, token, diseases, reportDate, lastRefreshed, yearsToFetch);
+      await buildYearOutput(capacityUri, token, diseases, yearsToFetch);
       return;
     }
 
@@ -265,7 +206,7 @@ async function getDiseaseList(mode, scopeArg) {
       const currentYear = Number(reportDate.slice(0, 4));
       const currentMonth = Number(reportDate.slice(4, 6));
       const periodsToFetch = parseMonthScope(scopeArg, currentYear, currentMonth);
-      await buildMonthOutput(capacityUri, token, diseases, reportDate, lastRefreshed, periodsToFetch);
+      await buildMonthOutput(capacityUri, token, diseases, periodsToFetch);
       return;
     }
 
