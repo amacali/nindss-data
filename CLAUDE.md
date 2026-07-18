@@ -13,6 +13,7 @@ Scrapes daily notifiable-disease notification snapshots for Australia from the N
 - Run the per-year breakdown (on request): `node index.js year` (current year only, default), `node index.js year 2019` (backfill/refresh a specific year), or `node index.js year all` (full history rebuild, ~2.4k requests) — writes `data/year/<year>_notifications.json` per year, plus `data/year/changed_years.json` — see Architecture
 - Run the monthly history (on request): `node index.js month` (current year+month only, default), `node index.js month 201907` (backfill/refresh one month), `node index.js month 2019` (backfill/refresh a whole year), or `node index.js month all` (full history rebuild — expensive, though `changed_years.json` cuts it from ~29k to ~20k requests) — writes `data/month/<YYYYMM>_notifications.json` per month — see Architecture
 - There are no tests, lint, or build steps configured (`npm test` is a stub that always fails).
+- README.md (the data-consumer-facing schema doc) is not auto-checked against the code and can drift stale — verify its file paths/shapes against `data/` and this file before trusting it.
 
 ## Architecture
 

@@ -1,21 +1,14 @@
 /*******************************************************************************
-  NINDSS PowerBI client
+  NINDSS PowerBI client — shared DAX query client for the NINDSS PowerBI
+  dashboard (https://nindss.health.gov.au/pbi-dashboard/). There is no public
+  NINDSS API; this reverse-engineers the embedded PowerBI report:
 
-  Shared DAX query client for the NINDSS PowerBI dashboard
-  (https://nindss.health.gov.au/pbi-dashboard/). There is no public NINDSS API;
-  this reverse-engineers the embedded PowerBI report the dashboard renders:
-
-    getConfig()          scrape the page → decode the PowerBI embed config
-      → getToken()       embed token → short-lived MWCToken + query endpoint
-        → getLatestUpdateDate()  when the data was last refreshed
-        → getCaseNumbers()       per disease: year/month/state notification counts
+    getConfig() → getToken() → getLatestUpdateDate() / getCaseNumbers()
 
   All data queries POST hand-built DAX (SemanticQueryDataShapeCommand) bodies
-  to the PowerBI query endpoint. These bodies are opaque strings copied from
-  the dashboard's own network traffic — the DatasetId, ReportId, VisualId and
-  entity/column names inside them are what break if the dashboard changes.
-
-  Used by both index.js (current schema) and legacy.js (deprecated schema).
+  copied from the dashboard's own network traffic — the DatasetId, ReportId,
+  VisualId and entity/column names inside them are what break if the
+  dashboard changes. Used by both index.js and legacy.js.
 *******************************************************************************/
 
   // NPM packages that we installed
@@ -29,13 +22,8 @@
   export const STATE_CODES = ['ACT','NSW','NT','QLD','SA','TAS','VIC','WA'];
   export const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-/*******************************************************************************
-  getConfig()
-
-  Fetches the dashboard HTML and pulls the base64 `embedconfig` attribute off
-  the <div class="powerbi"> element, decoding it to the PowerBI embed config
-  (report id + embed token). Returns the parsed config object.
-*******************************************************************************/
+// Fetches the dashboard HTML and decodes the base64 `embedconfig` attribute
+// off <div class="powerbi"> into the PowerBI embed config (report id + token).
   export async function getConfig() {
 
     try {
@@ -55,13 +43,8 @@
     }
   }
 
-/*******************************************************************************
-  getToken()
-
-  Trades the (longer-lived) embed token for the short-lived MWCToken and the
-  `capacityUri` that DAX queries must be POSTed to. Returns
-  { reportId, token, capacityUri }.
-*******************************************************************************/
+// Trades the embed token for a short-lived MWCToken + the `capacityUri` that
+// DAX queries POST to. Returns { reportId, token, capacityUri }.
   export async function getToken() {
 
     var config = await getConfig();
@@ -102,15 +85,9 @@
     }
   }
 
-/*******************************************************************************
-  getLatestUpdateDate()
-
-  Reads the DataRefreshAEST table — the same value shown as "Last refreshed on"
-  on the dashboard — and returns:
-    { reportDate:    "YYYYMMDD" (GMT), used for the filename/grouping key,
-      lastRefreshed: full ISO timestamp in Australian Eastern time }
-  Both derive from the same epoch; reportDate is just the truncated form.
-*******************************************************************************/
+// Reads the DataRefreshAEST table (the dashboard's "Last refreshed on" value)
+// and returns { reportDate: "YYYYMMDD" (GMT), lastRefreshed: full AEST/AEDT
+// timestamp } — both derived from the same epoch.
   export async function getLatestUpdateDate(capacityUri,token) {
 
     try {
@@ -148,75 +125,43 @@
   }
 
 
-/*******************************************************************************
-  getCaseNumbers(capacityUri, token, diseaseName, mode)
+// getCaseNumbers(capacityUri, token, diseaseName, mode) — per-state counts for
+// one disease, nested by period. `mode` picks both query granularity and shape:
+//   'all-time' → { <state>: count }
+//   'year'     → { <year>: { <state>: count } }
+//   'month'    → { <year>: { <month>: { <state>: count } } }
+// 'year' mode here returns the GROUPED (possibly <5-masked) value, used as-is
+// by legacy.js (must stay cheap). index.js's own year/month builds instead use
+// getYearCumulativeTotal/getMonthCumulativeTotal below for unmasked totals.
+//
+// Each mode is queried at its own granularity rather than summed from a finer
+// one, because the dashboard masks any cell <5 and summing finer cells
+// accumulates that loss (COVID-19 lifetime total: 12,302,011 all-time vs
+// 12,302,009 year-summed vs 12,301,939 month-summed).
+//
+// Two response layouts (PowerBI rejects a secondary axis with no primary):
+// 'all-time' has no period, so STATE is the PRIMARY axis (each DM0 row is one
+// state, C=[state, measure]). 'year'/'month' keep STATE on the SECONDARY axis
+// (the per-row X array, labelled via SH[0].DM1) with period(s) as primary rows.
+//
+// Decoding uses two sparse-encoding schemes: row sparsity (row.R bitmask marks
+// which of a row's projected values repeat the previous row, so only changed
+// ones appear in row.C) and measure sparsity (a state's M0 in row.X is omitted
+// when it repeats the previous state's value). 'month' additionally
+// dictionary-encodes [year, month] via ValueDicts.D0/D1; 'year' has a single
+// primary dimension so the year sits directly on row.G0.
+//
+// Gotcha: the STATE secondary-axis key is G<n> where n = number of primary
+// dimensions (G1 for 'year', G2 for 'month') — projecting an extra hierarchy
+// level shifts every later dimension's G-number.
 
-  Queries per-state notification counts for a single disease and returns them
-  nested by period. `mode` picks BOTH the query granularity and the return shape:
-    'all-time' → all-time per-state counts  → { <state>: count }
-    'year'     → per-year per-state counts  → { <year>: { <state>: count } }
-    'month'    → per-year per-month counts  → { <year>: { <month>: { <state>: count } } }
-
-  NOTE: 'year' mode's per-state counts here are the GROUPED (possibly masked,
-  <5) values — used as-is by legacy.js's daily writeLegacyCases, which must
-  stay cheap (one request per disease). index.js's own 'year'-mode file build
-  does NOT use this mode; it calls getYearCumulativeTotal() below directly, per
-  year per disease, to get unmasked cumulative totals instead — see index.js.
-
-  WHY THREE GRANULARITIES instead of always querying months and summing up:
-  the dashboard masks any displayed cell whose count is <5. Masking bites at
-  whatever granularity you query, so summing finer cells accumulates the loss —
-  a cell that is <5 per month is usually >=5 per year, and a state's all-time
-  total is masked only if it is genuinely <5 forever. Each mode is therefore the
-  LEAST-masked source for its own shape (measured against COVID-19's true
-  national lifetime total): 'all-time' = 12,302,011, 'year' summed = 12,302,009,
-  'month' summed = 12,301,939. Query each level directly rather than deriving a
-  coarser file from a finer one.
-
-  TWO RESPONSE LAYOUTS, because PowerBI rejects a secondary axis with no primary
-  ("SecondaryGroupsWithoutPrimary"):
-    - 'all-time' has no period dimension, so STATE must go on the PRIMARY axis: each
-      DM0 row is one state, C = [state, measure]. There is no secondary axis / X
-      array and no SH state list.
-    - 'year'/'month' keep STATE on the SECONDARY axis (the X array, one entry per
-      state) with the period(s) as the primary rows; the state labels come from
-      SH[0].DM1.
-
-  Decoding involves up to two SEPARATE sparse-encoding schemes:
-
-    1. Row sparsity (the DM0 rows, row.R bitmask). Wherever more than one value
-       is projected onto a row, row.R flags which projections REPEAT the previous
-       row, so only the *changed* ones appear in row.C (consumed left-to-right);
-       the rest carry forward. This drives: 'all-time' rows over [state, measure];
-       and 'month' rows over dictionary-encoded [year, month] (ValueDicts.D0/D1).
-       'year' projects a single primary dimension, so the year is stored directly
-       as row.G0 with no dictionary/bitmask.
-
-    2. Measure sparsity (the row.X array in 'year'/'month'). A state's M0 is
-       omitted when it repeats the previous state's value, so `number` carries
-       forward — see "check if value exists, otherwise repeat" below.
-
-  NOTE: in 'year'/'month' the STATE secondary-axis key is G<n> where n = number
-  of primary dimensions: G1 for 'year' (year only), G2 for 'month' (year+month).
-  Projecting an extra hierarchy level shifts every later dimension's G-number, so
-  this key must move in lock-step with the Select list.
-*******************************************************************************/
-/*******************************************************************************
-  getYearCumulativeTotal(capacityUri, token, diseaseName, maxYear)
-
-  Per-state notification total for a disease restricted to DAX_Year <= maxYear
-  — the same STATE-on-primary-axis shape as 'all-time' (no year grouping), just
-  with an extra upper-bound filter. Used by index.js's per-year cache build
-  (data/year/<year>_notifications.json, one file per DAX_Year) to get counts
-  that are far less likely to be masked (<5) than a single year's grouped
-  count would be, since a running total only grows. Confirmed empirically
-  against Measles: the grouped 'year'-mode query (see getCaseNumbers above)
-  masked ACT/SA/TAS in 2019 and VIC/WA in 2020 to 0, while diffing consecutive
-  cumulative totals recovered the true (non-zero) figures.
-
-  Each returned value is a running total THROUGH maxYear, not that year's
-  delta — the delta is computed downstream in the database.
-*******************************************************************************/
+// getYearCumulativeTotal(capacityUri, token, diseaseName, maxYear) — per-state
+// total for DAX_Year <= maxYear (same PRIMARY-axis shape as 'all-time', plus
+// an upper-bound filter). A running total resists <5 masking far better than
+// a single year's grouped count (confirmed on Measles: the grouped query
+// masked ACT/SA/TAS in 2019 and VIC/WA in 2020 to 0; diffing consecutive
+// cumulative totals recovered the true nonzero figures). Returns a total
+// THROUGH maxYear, not that year's delta — deltas are computed downstream.
 export async function getYearCumulativeTotal(capacityUri, token, diseaseName, maxYear) {
   const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
   const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";
@@ -270,35 +215,19 @@ export async function getYearCumulativeTotal(capacityUri, token, diseaseName, ma
   }
 }
 
-/*******************************************************************************
-  getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month)
-
-  Per-state notification total for a disease restricted to everything up to
-  and including a given (year, month) — used by index.js's per-month cache
-  build (data/month/<YYYYMM>_notifications.json). This is NOT the same as
-  getYearCumulativeTotal restricted within one year: a within-year-only window
-  (e.g. "just this year's months so far") is still exactly as maskable as the
-  plain grouped query, because PowerBI masks based on the resulting aggregate
-  value, not the query shape — confirmed empirically (a single year's total
-  for a masked cell stayed masked whether expressed as a year group-by or as
-  an equivalent "all 12 months of this year" filter).
-
-  What actually resists masking is a running total that spans the ENTIRE
-  history up to the target month, the same principle as getYearCumulativeTotal
-  but requiring a genuine OR across two sub-filters in ONE query (so PowerBI
-  computes and potentially masks only the single, large, cumulative result —
-  not two separately-maskable pieces that get summed afterwards in JS, which
-  would already have lost the masked information before the sum happens):
-    (DAX_Year <= year - 1)  OR  (DAX_Year = year AND Month IN [Jan..month])
-  PowerBI's DAX query JSON supports arbitrary Or/And combinators the same way
-  it supports Not/In/Comparison — confirmed by live testing: cumulative totals
-  from this query matched getYearCumulativeTotal exactly at year boundaries
-  (Dec of each year), and revealed genuine new unmasked data mid-year (e.g. a
-  Measles ACT case in H1 2019 that every single-year query had masked to 0).
-
-  Each returned value is a running total THROUGH (year, month), not that
-  month's delta — the delta is computed downstream in the database.
-*******************************************************************************/
+// getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month) —
+// per-state total through (year, month), used for the per-month cache build.
+// A within-year-only window ("just this year's months so far") is just as
+// maskable as a plain grouped query — PowerBI masks on the resulting value,
+// not the query shape. What resists masking is a running total spanning the
+// ENTIRE history, expressed as one query with a genuine OR so PowerBI can only
+// mask the single large cumulative result, not two separately-maskable pieces
+// summed afterwards in JS:
+//   (DAX_Year <= year - 1)  OR  (DAX_Year = year AND Month IN [Jan..month])
+// Confirmed by live testing: totals matched getYearCumulativeTotal exactly at
+// year boundaries, and revealed genuine unmasked data mid-year (a Measles ACT
+// case in H1 2019 every single-year query had masked to 0). Returns a total
+// THROUGH (year, month), not that month's delta.
 export async function getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month) {
   const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
   const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";

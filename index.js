@@ -1,52 +1,28 @@
 /*******************************************************************************
-  NINDSS notification scraper
+  NINDSS notification scraper — pulls notifiable-disease notification counts
+  for Australia from the NINDSS PowerBI dashboard. Three modes:
+    node index.js / all-time        → data/<reportDate>_notifications.json (daily, default)
+    node index.js year [Y|all]      → data/year/<year>_notifications.json (on request)
+    node index.js month [YM|Y|all]  → data/month/<YYYYMM>_notifications.json (on request)
 
-  Pulls notifiable-disease notification counts for Australia from the NINDSS
-  PowerBI dashboard (https://nindss.health.gov.au/pbi-dashboard/). Three modes:
-    node index.js                 → all-time totals per state (daily, default)
-    node index.js all-time        → same as above, named explicitly
-    node index.js year [Y|all]    → cumulative-per-year breakdown  (data/year/,  on request)
-    node index.js month [YM|Y|all] → cumulative-per-month breakdown (data/month/, on request)
+  'year'/'month' each write one cache file per period holding a CUMULATIVE
+  per-state total THROUGH that period (via getYearCumulativeTotal /
+  getMonthCumulativeTotal in powerbi.js — resists <5 masking far better than a
+  single period's own count); deltas are computed downstream. Scope defaults
+  to the current period; an optional third CLI arg backfills a specific past
+  period or 'all' rebuilds full history (expensive for month, ~20-30k
+  requests) — see parseMonthScope. Targeted periods are always fetched live,
+  never reused from cache.
 
-  'all-time' is the only mode still writing the "classic" flat
-  data/<reportDate>_notifications.json shape via the shared loop at the bottom
-  of getDiseaseList. 'year' and 'month' each have their own build path
-  (buildYearOutput / buildMonthOutput, below) writing entirely under their own
-  subdirectory (data/year/ or data/month/) — NOT data/<reportDate>_..., and NOT
-  the plain (possibly masked) getCaseNumbers query.
+  'year' mode also maintains data/year/changed_years.json (writeYearChangeMap):
+  for any disease/year proven flat (no new cases), buildMonthOutput skips the
+  live month query for that whole year and carries the prior total forward.
 
-  Both subdirectory modes share the same design: one cache file per period
-  (data/year/<year>_notifications.json, data/month/<YYYYMM>_notifications.json)
-  holding a CUMULATIVE per-state total THROUGH that period (via
-  getYearCumulativeTotal / getMonthCumulativeTotal in powerbi.js — a running
-  total resists PowerBI's <5 masking far better than a single period's own
-  count). Per-period deltas are computed downstream in the database, not here.
-  Scope defaults to the current (still-accumulating) period (cheap); an
-  optional third CLI arg can target a specific past period to backfill, or
-  'all' to rebuild the full history (very expensive for month — ~20-30k
-  requests) — see getDiseaseList's CLI parsing and parseMonthScope. No period
-  is ever reused from an existing cache file once targeted — every targeted
-  period is always fetched live.
+  On 'all-time' runs this also writes the deprecated data/legacy/<reportDate>_cases.json
+  — see legacy.js, slated for removal, output format frozen.
 
-  'year' mode also maintains data/year/changed_years.json (see
-  writeYearChangeMap), a derived optimization artifact: for any disease/year
-  it proves had zero new cases, buildMonthOutput skips the live month-level
-  query entirely for that year and carries the prior year's cumulative total
-  forward instead — safe, since a flat year is identical across every month
-  within it by construction.
-
-  Neither of these touches legacy.js — legacy.js's own 'year'-mode query (via
-  getCaseNumbers, the plain grouped query) is untouched and stays exactly as
-  it was: it serves an old site whose format must not change.
-
-  On 'all-time' mode (the daily run) this also writes the deprecated
-  data/legacy/<report_date>_cases.json — see legacy.js, slated for removal.
-
-  PowerBI query/decoding logic (getConfig/getToken/getLatestUpdateDate/
-  getCaseNumbers) lives in powerbi.js, shared with legacy.js.
-
-  Output schema (see README.md):
-    { report_date, last_refreshed, columns, rows }
+  PowerBI query/decoding logic lives in powerbi.js, shared with legacy.js.
+  Output schema details: see README.md.
 *******************************************************************************/
 
   import fetch from 'node-fetch';
@@ -60,25 +36,13 @@
   const MONTH_CACHE_DIR = 'data/month';
   const YEAR_CHANGE_MAP_PATH = YEAR_CACHE_DIR + '/changed_years.json';
 
-/*******************************************************************************
-  buildYearOutput(capacityUri, token, diseases, yearsToFetch)
-
-  Writes one file per DAX_Year in `yearsToFetch` under
-  data/year/<year>_notifications.json — cumulative per-state totals for
-  DAX_Year <= year across every disease (see getYearCumulativeTotal in
-  powerbi.js for why cumulative rather than a single year's grouped,
-  more-often-masked count). Every requested year is fetched live and its cache
-  file overwritten — no reuse-if-exists caching.
-
-  `yearsToFetch` controls scope/cost per run (see getDiseaseList's CLI parsing):
-    [currentYear]                 → default, ~1 request per disease (~67)
-    [aSpecificYear]               → backfill/refresh just that one year
-    [YEAR_FLOOR..currentYear]     → 'all': full history rebuild (~2.4k requests)
-
-  Afterwards, rewrites data/year/changed_years.json (see writeYearChangeMap) —
-  cheap (local file reads only), so it's kept in sync on every 'year' run
-  regardless of scope, from whatever per-year cache files exist on disk.
-*******************************************************************************/
+// Writes one file per DAX_Year in `yearsToFetch` under
+// data/year/<year>_notifications.json — cumulative per-state totals for
+// DAX_Year <= year across every disease. Every requested year is fetched live
+// and overwritten (no reuse-if-exists). `yearsToFetch`: [currentYear] default
+// (~1 request/disease), [aYear] targeted backfill, or YEAR_FLOOR..currentYear
+// for 'all' (~2.4k requests). Afterwards rewrites changed_years.json (cheap,
+// local reads only) from whatever per-year cache files exist on disk.
 async function buildYearOutput(capacityUri, token, diseases, yearsToFetch) {
   fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
 
@@ -95,21 +59,13 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch) {
   writeYearChangeMap();
 }
 
-/*******************************************************************************
-  writeYearChangeMap()
-
-  Reads every data/year/<year>_notifications.json cache file present on disk
-  and writes data/year/changed_years.json:
-    { generated_from_years: [<every year currently cached>],
-      changed_years: { <disease>: [<years where the cumulative total changed
-                                    from the prior year — i.e. new cases>] } }
-  A year NOT listed for a disease (but within generated_from_years) is FLAT:
-  its cumulative-through-month total is identical for all 12 months to the
-  prior year's cumulative total, so buildMonthOutput can skip live queries for
-  that disease/year entirely and just carry the prior year's total forward.
-  A year outside generated_from_years is UNKNOWN (that year's cache is
-  missing) — buildMonthOutput must query it live rather than guess.
-*******************************************************************************/
+// Reads every data/year/<year>_notifications.json on disk and writes
+// data/year/changed_years.json: { generated_from_years: [<cached years>],
+// changed_years: { <disease>: [<years where the cumulative total changed>] } }.
+// A year absent for a disease (but within generated_from_years) is FLAT —
+// identical to the prior year, so buildMonthOutput can skip it entirely. A
+// year outside generated_from_years is UNKNOWN (cache missing) and must be
+// queried live.
 function writeYearChangeMap() {
   const years = fs.readdirSync(YEAR_CACHE_DIR)
     .filter(f => /^\d{4}_notifications\.json$/.test(f))
@@ -140,20 +96,10 @@ function writeYearChangeMap() {
   fs.writeFileSync(YEAR_CHANGE_MAP_PATH, JSON.stringify({ generated_from_years: years, changed_years: changedYears }));
 }
 
-/*******************************************************************************
-  parseMonthScope(scopeArg, currentYear, currentMonth)
-
-  Turns the CLI's optional third arg into a list of { year, month } periods for
-  buildMonthOutput to fetch:
-    (no arg)   → [{ currentYear, currentMonth }]           — default, cheap
-    'YYYYMM'   → that single period                         — targeted backfill
-    'YYYY'     → every month of that year (Jan..currentMonth if it's the
-                 current year, else Jan..Dec)                — targeted backfill
-    'all'      → every month from YEAR_FLOOR through the current month — full
-                 history rebuild. Unlike year mode's 'all' (~2.4k requests),
-                 this is ~37 years × 12 months × ~67 diseases ≈ 30k requests —
-                 large enough that it should be a deliberate, explicit choice.
-*******************************************************************************/
+// Turns the CLI's optional third arg into { year, month } periods to fetch:
+// no arg → [current period]; 'YYYYMM' → that period; 'YYYY' → every month of
+// that year; 'all' → every month from YEAR_FLOOR to now (~30k requests —
+// large enough to be a deliberate, explicit choice).
 function parseMonthScope(scopeArg, currentYear, currentMonth) {
   if (!scopeArg) return [{ year: currentYear, month: currentMonth }];
   if (scopeArg === 'all') {
@@ -177,22 +123,13 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
   throw new Error("invalid month scope '" + scopeArg + "' — expected YYYYMM, YYYY, or 'all'");
 }
 
-/*******************************************************************************
-  buildMonthOutput(capacityUri, token, diseases, periodsToFetch)
-
-  Writes one file per (year, month) in `periodsToFetch` under
-  data/month/<YYYYMM>_notifications.json — cumulative per-state totals through
-  that month across every disease, via getMonthCumulativeTotal in powerbi.js.
-
-  Optimization: for a disease/year where data/year/changed_years.json (written
-  by buildYearOutput) shows NO change from the prior year, every month in that
-  year is guaranteed flat (identical to the prior year's cumulative total) —
-  skip the live query entirely and carry that total forward instead. Measured
-  against the current cache: ~32% of disease-year pairs are flat, cutting a
-  full 'all' rebuild from ~29k requests to ~20k. Years outside the change
-  map's coverage (or if it's missing entirely) always fall back to a live
-  query — this is a pure optimization, never a source of stale/wrong data.
-*******************************************************************************/
+// Writes one file per (year, month) in `periodsToFetch` under
+// data/month/<YYYYMM>_notifications.json — cumulative per-state totals
+// through that month, via getMonthCumulativeTotal. Optimization: if
+// changed_years.json shows a disease/year had no change from the prior year,
+// every month in it is flat — skip the live query and carry the prior total
+// forward (cuts a full 'all' rebuild from ~29k requests to ~20k). Years
+// outside the map's coverage always fall back to a live query.
 async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch) {
   fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
 
@@ -249,17 +186,8 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch) {
   }
 }
 
-/*******************************************************************************
-  getDiseaseList(mode, scopeArg)
-
-  Entry point. Fetches the full list of disease names, then dispatches:
-    'year'     → buildYearOutput  (scopeArg: nothing | a year | 'all')
-    'month'    → buildMonthOutput (scopeArg: nothing | 'YYYYMM' | 'YYYY' | 'all',
-                 parsed by parseMonthScope)
-    'all-time' → falls through to the loop below: one all-time row per disease
-                 via getCaseNumbers, written to data/<reportDate>_notifications.json,
-                 plus the deprecated legacy.js output (see writeLegacyCases).
-*******************************************************************************/
+// Entry point: fetches the disease list, then dispatches to buildYearOutput,
+// buildMonthOutput, or (for 'all-time') the loop below plus writeLegacyCases.
 async function getDiseaseList(mode, scopeArg) {
 
   const { capacityUri, token } = await getToken();
@@ -339,18 +267,7 @@ async function getDiseaseList(mode, scopeArg) {
     console.log(error);
   }
 }
-  // Run the scraper. The first argument selects the granularity; with no argument
-  // (or 'all-time') it writes the daily all-time-totals file (this is what the
-  // daily workflow runs). For 'year'/'month', a second argument controls scope:
-  //   node index.js                → data/<date>_notifications.json         (all-time totals)
-  //   node index.js all-time       → same as above, named explicitly
-  //   node index.js year           → data/year/<date>_notifications.json    (current year only, default)
-  //   node index.js year 2019      → backfill/refresh just 2019 (data/year/2019_notifications.json)
-  //   node index.js year all       → rebuild full history (all years, YEAR_FLOOR..current)
-  //   node index.js month          → data/month/<date>_notifications.json   (current year+month only, default)
-  //   node index.js month 201907   → backfill/refresh just July 2019 (data/month/201907_notifications.json)
-  //   node index.js month 2019     → backfill/refresh every month of 2019
-  //   node index.js month all      → rebuild full history (very expensive — ~30k requests)
+  // Run the scraper — see the header comment above for the mode/scope table.
   const arg = process.argv[2];
   const mode = (arg === 'year' || arg === 'month') ? arg : 'all-time';
   const scopeArg = process.argv[3];
