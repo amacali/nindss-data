@@ -3,14 +3,17 @@
 
   Reshapes year-granularity notification counts (via getCaseNumbers(...,'year'))
   into the pre-rewrite flat-array format: one record per disease/year/state,
-  kept only for consumers still on the old schema. Written alongside the current
-  _notifications.json on 'all-time' mode (daily) runs — see index.js.
+  kept only for consumers still on the old schema. Written to
+  data/legacy/<reportDate>_cases.json alongside the current _notifications.json
+  on 'all-time' mode (daily) runs — see index.js.
 
   This file is the entire legacy surface: deleting it and its one call site in
   index.js removes the legacy output cleanly.
 *******************************************************************************/
   import fs from 'fs';
   import { getCaseNumbers, STATE_CODES } from './powerbi.js';
+
+  const LEGACY_DIR = 'data/legacy';
 
   export async function writeLegacyCases(capacityUri, token, reportDate, diseaseNames) {
 
@@ -33,5 +36,6 @@
       }
     }
 
-    fs.writeFileSync('data/' + reportDate + '_cases.json', JSON.stringify(rows));
+    fs.mkdirSync(LEGACY_DIR, { recursive: true });
+    fs.writeFileSync(LEGACY_DIR + '/' + reportDate + '_cases.json', JSON.stringify(rows));
   }

@@ -40,7 +40,7 @@
   it was: it serves an old site whose format must not change.
 
   On 'all-time' mode (the daily run) this also writes the deprecated
-  data/<report_date>_cases.json — see legacy.js, slated for removal.
+  data/legacy/<report_date>_cases.json — see legacy.js, slated for removal.
 
   PowerBI query/decoding logic (getConfig/getToken/getLatestUpdateDate/
   getCaseNumbers) lives in powerbi.js, shared with legacy.js.
