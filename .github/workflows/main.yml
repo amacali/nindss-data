@@ -23,7 +23,7 @@ on:
 
 jobs:
   archive:
-    timeout-minutes: 10
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
@@ -44,10 +44,18 @@ jobs:
       # real errors still surface.
       run: npm install --loglevel=error
     - name: Run script
-      # Scheduled runs pass no input → daily all-time totals. Manual runs may pass
-      # "year" or "month" to (re)generate those files instead.
-      run: node index.js ${{ github.event.inputs.mode || 'all-time' }}
-      timeout-minutes: 10
+      # Scheduled runs pass no input → run all-time, year, and month (each with
+      # no scope arg, so year/month only ever refresh the current period, never
+      # a full backfill). Manual dispatch runs only the selected mode.
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          node index.js ${{ github.event.inputs.mode || 'all-time' }}
+        else
+          node index.js all-time
+          node index.js year
+          node index.js month
+        fi
+      timeout-minutes: 18
     - name: Push data
       run: |
         git config user.name amacali
