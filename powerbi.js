@@ -22,6 +22,32 @@
   export const STATE_CODES = ['ACT','NSW','NT','QLD','SA','TAS','VIC','WA'];
   export const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
+  // Count_Notification returns a FORMATTED DISPLAY STRING for any nonzero
+  // count — quoted, and comma-grouped past 999, e.g. "'1'" or "'7,208'". A
+  // true zero comes back as the integer 0 (DAX "0L") instead. Strip both the
+  // quotes and the separators before parsing; missing the commas silently
+  // truncates 7,208 to 7.
+  //
+  // The reason to pay that cost: Count_Notification_forgraph (the measure the
+  // visuals use) applies the dashboard's <5 mask and reports those cells as a
+  // plain 0, while this measure returns the real value. Confirmed on Measles
+  // 2019 (ACT/SA/TAS) and 2020 (VIC/WA), and on Rabies 2026 QLD.
+  // On the SECONDARY axis ('year'/'month' per-row X arrays) this measure is
+  // additionally DICTIONARY-ENCODED: M0 is an INDEX into one of ds0.ValueDicts,
+  // not the value itself. WHICH dict varies by mode — 'year' uses D0, 'month'
+  // uses D2 (D0/D1 there are the year/month DIMENSION dicts) — so the name is
+  // read off the X header's "DN" field rather than hardcoded. Pass it as
+  // `dict`. On the PRIMARY axis ('all-time') values are literal and `dict` is
+  // omitted. Reading an index as a count yields plausible-looking wrong
+  // numbers, so this distinction matters.
+  function parseMeasure(value, dict) {
+    if (dict && typeof value === 'number') value = dict[value];
+    if (typeof value === 'number') return value;
+    if (value === undefined || value === null) return 0;
+    const parsed = parseInt(String(value).replace(/[',]/g, ''), 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+
 // Fetches the dashboard HTML and decodes the base64 `embedconfig` attribute
 // off <div class="powerbi"> into the PowerBI embed config (report id + token).
   export async function getConfig() {
@@ -114,9 +140,14 @@
       // Convert the response into text
       const data = await response.json();
       const epoch = data.results[0].result.data.dsr.DS[0].PH[0].DM0[0].M0;
+      // The epoch already carries the wall-clock time the dashboard prints in
+      // its "Last Refreshed On" card, so read it as GMT to recover those
+      // digits, then LABEL them Australia/Melbourne. Converting instead of
+      // labelling shifts it a further 10 hours and can roll it into the next
+      // day (dashboard 05/09 3:31:23 PM became 2026-09-06T01:31:23+10:00).
       return {
         reportDate: moment(epoch).tz("GMT").format("YYYYMMDD"),
-        lastRefreshed: moment(epoch).tz("Australia/Sydney").format()
+        lastRefreshed: moment.tz(moment(epoch).tz("GMT").format("YYYY-MM-DDTHH:mm:ss"), "Australia/Melbourne").format()
       };
 
     } catch (error) {
@@ -130,9 +161,9 @@
 //   'all-time' → { <state>: count }
 //   'year'     → { <year>: { <state>: count } }
 //   'month'    → { <year>: { <month>: { <state>: count } } }
-// 'year' mode here returns the GROUPED (possibly <5-masked) value, used as-is
-// by legacy.js (must stay cheap). index.js's own year/month builds instead use
-// getYearCumulativeTotal/getMonthCumulativeTotal below for unmasked totals.
+// Every mode selects Count_Notification, which returns the real value rather
+// than the <5-masked one — see parseMeasure. This is the only query path now:
+// legacy.js and index.js's year/month builds all come through here.
 //
 // Each mode is queried at its own granularity rather than summed from a finer
 // one, because the dashboard masks any cell <5 and summing finer cells
@@ -155,139 +186,11 @@
 // dimensions (G1 for 'year', G2 for 'month') — projecting an extra hierarchy
 // level shifts every later dimension's G-number.
 
-// getYearCumulativeTotal(capacityUri, token, diseaseName, maxYear) — per-state
-// total for DAX_Year <= maxYear (same PRIMARY-axis shape as 'all-time', plus
-// an upper-bound filter). A running total resists <5 masking far better than
-// a single year's grouped count (confirmed on Measles: the grouped query
-// masked ACT/SA/TAS in 2019 and VIC/WA in 2020 to 0; diffing consecutive
-// cumulative totals recovered the true nonzero figures). Returns a total
-// THROUGH maxYear, not that year's delta — deltas are computed downstream.
-export async function getYearCumulativeTotal(capacityUri, token, diseaseName, maxYear) {
-  const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
-  const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";
-  // ComparisonKind 4 = LessThanOrEqual (confirmed empirically; ComparisonKind 1,
-  // used for the floor filter below, is GreaterThanOrEqual).
-  const maxYearFilter = "{\"Condition\":{\"Comparison\":{\"ComparisonKind\":4,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + maxYear + "L\"}}}}}";
-
-  const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}}," + maxYearFilter + ",{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[" + ORDER_STATE + "]},\"Binding\":{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1},\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
-
-  try {
-    const response = await fetch(
-      capacityUri + 'query', {
-      "headers": {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "en-AU,en-US;q=0.9,en;q=0.8,fr;q=0.7",
-        "authorization": "MWCToken " + token,
-        "content-type": "application/json;charset=UTF-8",
-        "sec-ch-ua": "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Windows\"",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "cross-site",
-        "Referer": "https://app.powerbi.com/",
-        "Referrer-Policy": "strict-origin-when-cross-origin"
-      },
-      "body": body,
-      "method": "POST"
-    });
-
-    const data = await response.json();
-    if (!data.results) { console.log('Cumulative query failed for ' + diseaseName + ' <=' + maxYear, data); return null; }
-    const ds0 = data.results[0].result.data.dsr.DS[0];
-    const results = ds0.PH[0].DM0;
-
-    const current = [undefined, undefined];   // [state, measure]
-    const cases = {};
-    results.forEach(row => {
-      const repeatMask = row.R || 0;
-      var ci = 0;
-      for (var p = 0; p < 2; p++) {
-        if (!(repeatMask & (1 << p))) current[p] = row.C[ci++];
-      }
-      cases[current[0]] = current[1];
-    });
-    return cases;
-
-  } catch (error) {
-    console.log(error);
-    return null;
-  }
-}
-
-// getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month) —
-// per-state total through (year, month), used for the per-month cache build.
-// A within-year-only window ("just this year's months so far") is just as
-// maskable as a plain grouped query — PowerBI masks on the resulting value,
-// not the query shape. What resists masking is a running total spanning the
-// ENTIRE history, expressed as one query with a genuine OR so PowerBI can only
-// mask the single large cumulative result, not two separately-maskable pieces
-// summed afterwards in JS:
-//   (DAX_Year <= year - 1)  OR  (DAX_Year = year AND Month IN [Jan..month])
-// Confirmed by live testing: totals matched getYearCumulativeTotal exactly at
-// year boundaries, and revealed genuine unmasked data mid-year (a Measles ACT
-// case in H1 2019 every single-year query had masked to 0). Returns a total
-// THROUGH (year, month), not that month's delta.
-export async function getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month) {
-  const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
-  const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";
-
-  // ComparisonKind 4 = LessThanOrEqual, 0 = Equal (4 confirmed empirically in
-  // getYearCumulativeTotal; 0 confirmed here by the year-boundary match test).
-  const priorYears = "{\"Comparison\":{\"ComparisonKind\":4,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + (year - 1) + "L\"}}}}";
-  const thisYearEq = "{\"Comparison\":{\"ComparisonKind\":0,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + year + "L\"}}}}";
-  const monthValues = MONTH_NAMES.slice(0, month).map(m => "[{\"Literal\":{\"Value\":\"'" + m + "'\"}}]").join(",");
-  const monthIn = "{\"In\":{\"Expressions\":[{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Month Name\"}}],\"Values\":[" + monthValues + "]}}";
-  const thisYearPartial = "{\"And\":{\"Left\":" + thisYearEq + ",\"Right\":" + monthIn + "}}";
-  const cumulativeThroughMonthFilter = "{\"Condition\":{\"Or\":{\"Left\":" + priorYears + ",\"Right\":" + thisYearPartial + "}}}";
-
-  const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}}," + cumulativeThroughMonthFilter + ",{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[" + ORDER_STATE + "]},\"Binding\":{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1},\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
-
-  try {
-    const response = await fetch(
-      capacityUri + 'query', {
-      "headers": {
-        "accept": "application/json, text/plain, */*",
-        "accept-language": "en-AU,en-US;q=0.9,en;q=0.8,fr;q=0.7",
-        "authorization": "MWCToken " + token,
-        "content-type": "application/json;charset=UTF-8",
-        "sec-ch-ua": "\"Google Chrome\";v=\"119\", \"Chromium\";v=\"119\", \"Not?A_Brand\";v=\"24\"",
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": "\"Windows\"",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "cross-site",
-        "Referer": "https://app.powerbi.com/",
-        "Referrer-Policy": "strict-origin-when-cross-origin"
-      },
-      "body": body,
-      "method": "POST"
-    });
-
-    const data = await response.json();
-    if (!data.results) { console.log('Cumulative query failed for ' + diseaseName + ' <=' + year + '-' + month, data); return null; }
-    const ds0 = data.results[0].result.data.dsr.DS[0];
-    const results = ds0.PH[0].DM0;
-
-    const current = [undefined, undefined];   // [state, measure]
-    const cases = {};
-    results.forEach(row => {
-      const repeatMask = row.R || 0;
-      var ci = 0;
-      for (var p = 0; p < 2; p++) {
-        if (!(repeatMask & (1 << p))) current[p] = row.C[ci++];
-      }
-      cases[current[0]] = current[1];
-    });
-    return cases;
-
-  } catch (error) {
-    console.log(error);
-    return null;
-  }
-}
-
-export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
+// `onlyYear` (optional) restricts the query to a single DAX_Year. 'month' mode
+// needs it: PowerBI truncates a result set at 500 year-month cells, so a
+// full-history month query silently loses everything past ~41 years. Scoped to
+// one year it returns 12 cells and cannot truncate.
+export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear) {
 
   // The three queries differ only in which period dimensions are projected and
   // how STATE is bound. Assemble the varying pieces per mode:
@@ -296,7 +199,10 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
   //   'month'    → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
   const SEL_YEAR = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"}";
   const SEL_MONTH = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Month Name\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Month Name\"}";
-  const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification_forgraph\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.M_Notification_ForGraph\",\"NativeReferenceName\":\"Count_Notification_forgraph\"}";
+  // Count_Notification, NOT Count_Notification_forgraph: the _forgraph variant
+  // applies the dashboard's <5 mask and reports masked cells as 0. See
+  // parseMeasure above for the encoding this measure returns.
+  const SEL_MEASURE = "{\"Measure\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"Count_Notification\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Count_Notification\",\"NativeReferenceName\":\"Count_Notification\"}";
   const ORDER_YEAR = "{\"Direction\":1,\"Expression\":{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"}}},";
   const ORDER_STATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}}";
 
@@ -310,10 +216,13 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
                            : "[0,1]";              // all-time: [STATE, measure]
   const binding = mode === 'all-time'
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
-    : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}},\"Secondary\":{\"Top\":{\"Count\":60}}},\"Version\":1}";
+    : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":5000}},\"Secondary\":{\"Top\":{\"Count\":100}}},\"Version\":1}";
   const orderBy = mode === 'all-time' ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
 
-  const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Comparison\":{\"ComparisonKind\":1,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"1990L\"}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
+    const yearFilter = onlyYear
+    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":0,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + onlyYear + "L\"}}}}}"
+    : "";
+const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}" + yearFilter + "],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
 
   try {
     // Fetch data from URL and store the response into a const
@@ -341,6 +250,13 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
     const data = await response.json();
     const ds0 = data.results[0].result.data.dsr.DS[0];
     const results = ds0.PH[0].DM0;
+    // Measure value dictionary for the secondary axis. The X header names it
+    // in "DN" (D0 for 'year', D2 for 'month'); absent on the primary axis.
+    const measureDictName = ((((results[0] || {}).X || [])[0] || {}).S || [])
+      .reduce((found, col) => found || (col.N === 'M0' ? col.DN : null), null);
+    const measureDict = measureDictName
+      ? (ds0.ValueDicts || {})[measureDictName]
+      : undefined;
 
     var number = 0;
 
@@ -358,7 +274,7 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
         for (var p = 0; p < 2; p++) {
           if (!(repeatMask & (1 << p))) current[p] = row.C[ci++];
         }
-        cases[current[0]] = current[1];
+        cases[current[0]] = parseMeasure(current[1]);
       });
       return cases;
     }
@@ -399,7 +315,9 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
             number = col.M0;
           }
 
-          cases[states[i]] = number;
+          // `number` holds the RAW carried-forward value; parse at assignment so
+          // a repeated masked string still repeats correctly.
+          cases[states[i]] = parseMeasure(number, measureDict);
 
           i++;
         });
@@ -418,7 +336,7 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode) {
           if (typeof col.M0 !== 'undefined') {
             number = col.M0;
           }
-          cases[states[i]] = number;
+          cases[states[i]] = parseMeasure(number, measureDict);
           i++;
         });
 

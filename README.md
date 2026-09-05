@@ -3,7 +3,9 @@ Notification-count snapshots from the NINDSS Portal (https://nindss.health.gov.a
 
 All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded.
 
-Each file is queried at its own granularity, coarsest first. The NINDSS dashboard masks any cell whose count is `<5`, and masking bites at whatever level you query, so a coarser file is always the least-masked (a cell `<5` per month is usually `≥5` per year, and a state's all-time total is masked only if it is `<5` forever). **The files are therefore NOT exact sums of one another** — the coarser file is slightly higher and more accurate. For COVID-19 the national lifetime total reads 12,302,011 (all-time), 12,302,009 (year summed), 12,301,939 (month summed). Read each granularity from its own file rather than aggregating a finer one.
+Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
+
+Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
 ### 📅 data/day/YYYYMMDD_notifications.json (daily — all-time totals) ##
 Written by the daily job (`node index.js`). One row per disease:
@@ -19,30 +21,28 @@ Written by the daily job (`node index.js`). One row per disease:
 ```
 
 ### 📅 data/year/\<year>_notifications.json (on request — per year) ##
-Generated on demand (`node index.js year`, `node index.js year 2019`, or `node index.js year all` for a full history rebuild). One file per year, one row per disease. Counts are a **cumulative total through that year**, not that year's own delta — this resists `<5` masking far better than a single year's grouped count:
+Generated on demand (`node index.js year`, `node index.js year 2019`, or `node index.js year all` for a full history rebuild). One file per year, one row per disease. Counts are **that year's own total**. Do not subtract the prior year:
 ```json
 {
-  "last_refreshed": "2026-07-13T16:35:22+10:00",
+  "last_refreshed": "2026-09-05T15:31:23+10:00",
   "year": 2024,
   "columns": ["disease", "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"],
   "rows": [
-    ["COVID-19", 4791, 133644, 2834, 73663, 44104, 12170, 54330, 16087]
+    ["COVID-19", 4791, 132640, 2834, 73662, 44120, 12170, 54331, 16088]
   ]
 }
 ```
 
-`data/year/changed_years.json` is a derived optimization artifact (rewritten on every `year`-mode run) recording, per disease, which years' cumulative totals actually changed from the prior year — used by month-mode to skip provably flat years. It isn't a data file and shouldn't be consumed downstream.
-
 ### 📅 data/month/\<YYYYMM>_notifications.json (on request — monthly history) ##
-Generated on demand (`node index.js month`, `node index.js month 201907`, `node index.js month 2019`, or `node index.js month all` for a full history rebuild — expensive). One file per (year, month), one row per disease. Counts are a **cumulative total through that month** (spanning full history, not just that year), not that month's own delta:
+Generated on demand (`node index.js month`, `node index.js month 201907`, `node index.js month 2019`, or `node index.js month all` for a full history rebuild). One file per (year, month), one row per disease. Counts are **that month's own total**. The 12 months of a year sum to that year's file:
 ```json
 {
-  "last_refreshed": "2026-07-13T16:35:22+10:00",
+  "last_refreshed": "2026-09-05T15:31:23+10:00",
   "year": 2024,
   "month": 3,
   "columns": ["disease", "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"],
   "rows": [
-    ["COVID-19", 241, 6775, 166, 4438, 4889, 2118, 2678, 945]
+    ["COVID-19", 241, 6725, 166, 4438, 4893, 2118, 2678, 945]
   ]
 }
 ```
@@ -59,9 +59,9 @@ Written alongside the daily all-time file for backwards compatibility with an ol
 | --- | --- |
 | `report_date` | Reporting date AEDT, also used as the filename prefix (all-time file only) |
 | `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/day/`, `data/year/` and `data/month/` file, and the first key in the year and month files. Use it to tell when a period file was last regenerated |
-| `year` / `month` | Present only in `data/year/`/`data/month/` files — the period the cumulative totals in `rows` run through |
+| `year` / `month` | Present only in `data/year/`/`data/month/` files — the period the counts in `rows` cover |
 | `columns` | Column order for every entry in `rows` |
-| `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts, cumulative through the file's period |
+| `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts for the file's own period |
 
 Load a file into MySQL in a single pass:
 ```sql
@@ -80,3 +80,12 @@ JSON_TABLE(doc, '$.rows[*]' COLUMNS (
 - **18 Jul 2026** replaced the combined `_notifications_year.json`/`_notifications_month.json` snapshots with per-period cache files under `data/year/<year>_notifications.json` and `data/month/<YYYYMM>_notifications.json`, each holding a cumulative total through that period rather than a per-period delta; moved the deprecated legacy schema to `data/legacy/<reportDate>_cases.json`
 - **5 Sep 2026** moved the daily snapshots from the top level of `data/` into `data/day/<reportDate>_notifications.json`, so the 3 granularities each sit in their own folder (`data/day/`, `data/year/`, `data/month/`). The file shape is unchanged, but any consumer that reads the old top-level path needs the new path. `data/legacy/` did not move.
 - **5 Sep 2026** added `last_refreshed` to every `data/year/` and `data/month/` file, as the first key, so a consumer can tell when a period file was last regenerated. New runs take the value from the dashboard, the same source the daily file uses. Existing files carry the timestamp of the commit that wrote them.
+- **5 Sep 2026 — version 3.0 (unmasked)** switched every query to the `Count_Notification` measure, which returns the counts the dashboard suppresses as `n.p`. Cells that read 0 because the true value was below 5 now carry that value. The daily file recovered 41 cells, and the rebuilt year history recovered 1,684 across 60 diseases. Rabies was added upstream the same day and appears with 1 QLD case.
+
+  Nothing was lost: no cell fell except where the dashboard itself revised the figure. The pre-3.0 snapshots were kept for comparison and then discarded once the rebuild was verified. `data/day/` now holds only version 3.0 files.
+
+- **6 Sep 2026 — per-period counts** `data/year/` and `data/month/` now hold **each period's own count** rather than a cumulative total through that period. A consumer that subtracted the prior period to get a delta must stop doing so, or it will double-subtract. The full history was rebuilt: 89 year files and 1,065 month files, from 1938.
+
+  The year floor moved from a hardcoded 1990 to the earliest year in the data, which is 1938. That recovered real pre-1990 cases the old floor dropped, such as Chlamydial infection back to 1938 and Gonococcal to 1973, and it is why `all-time` and the year files now agree exactly.
+
+  All 3 granularities reconcile for every disease and every state: 47,704 compared cells, no mismatch, and a shared total of 21,688,823.

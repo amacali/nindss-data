@@ -5,18 +5,13 @@
     node index.js year [Y|all]      → data/year/<year>_notifications.json (on request)
     node index.js month [YM|Y|all]  → data/month/<YYYYMM>_notifications.json (on request)
 
-  'year'/'month' each write one cache file per period holding a CUMULATIVE
-  per-state total THROUGH that period (via getYearCumulativeTotal /
-  getMonthCumulativeTotal in powerbi.js — resists <5 masking far better than a
-  single period's own count); deltas are computed downstream. Scope defaults
-  to the current period; an optional third CLI arg backfills a specific past
-  period or 'all' rebuilds full history (expensive for month, ~20-30k
-  requests) — see parseMonthScope. Targeted periods are always fetched live,
-  never reused from cache.
-
-  'year' mode also maintains data/year/changed_years.json (writeYearChangeMap):
-  for any disease/year proven flat (no new cases), buildMonthOutput skips the
-  live month query for that whole year and carries the prior total forward.
+  'year'/'month' each write one file per period holding that period's OWN
+  per-state count, not a running total. Counts are unmasked: every query
+  selects Count_Notification, which returns the real value where the
+  dashboard's <5 mask would report 0. Scope defaults to the current period;
+  an optional third CLI arg backfills a specific past period or 'all'
+  rebuilds full history — see parseMonthScope. Targeted periods are always
+  fetched live, never reused from cache.
 
   On 'all-time' runs this also writes the deprecated data/legacy/<reportDate>_cases.json
   — see legacy.js, slated for removal, output format frozen.
@@ -27,80 +22,57 @@
 
   import fetch from 'node-fetch';
   import fs from 'fs';
-  import { STATE_CODES, getToken, getLatestUpdateDate, getCaseNumbers, getYearCumulativeTotal, getMonthCumulativeTotal } from './powerbi.js';
+  import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers } from './powerbi.js';
   import { writeLegacyCases } from './legacy.js';
 
-  // Matches the DAX_Year >= 1990 floor filter already baked into every powerbi.js query.
-  const YEAR_FLOOR = 1990;
+  // Earliest year any disease has data for, read from the disease year map
+  // (data/reference/disease_years.json) rather than hardcoded. The queries
+  // carry NO year floor of their own — an earlier hardcoded 1990 silently
+  // dropped real pre-1990 cases (Chlamydial infection goes back to 1938,
+  // Gonococcal to 1973), which made 'all-time' and the year files disagree.
+  const DISEASE_YEARS_PATH = 'data/reference/disease_years.json';
+  const YEAR_FLOOR = fs.existsSync(DISEASE_YEARS_PATH)
+    ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
+    : 1938;
   const DAY_CACHE_DIR = 'data/day';
   const YEAR_CACHE_DIR = 'data/year';
   const MONTH_CACHE_DIR = 'data/month';
-  const YEAR_CHANGE_MAP_PATH = YEAR_CACHE_DIR + '/changed_years.json';
 
 // Writes one file per DAX_Year in `yearsToFetch` under
-// data/year/<year>_notifications.json — cumulative per-state totals for
-// DAX_Year <= year across every disease. Every requested year is fetched live
-// and overwritten (no reuse-if-exists). `yearsToFetch`: [currentYear] default
-// (~1 request/disease), [aYear] targeted backfill, or YEAR_FLOOR..currentYear
-// for 'all' (~2.4k requests). Afterwards rewrites changed_years.json (cheap,
-// local reads only) from whatever per-year cache files exist on disk.
+// data/year/<year>_notifications.json — that year's own per-state counts
+// across every disease. Every requested year is fetched live and overwritten
+// (no reuse-if-exists). `yearsToFetch`: [currentYear] default, [aYear]
+// targeted backfill, or YEAR_FLOOR..currentYear for 'all'. Cost is the same
+// either way — one query per disease returns every year at once.
 async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed) {
   fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
 
-  for (const year of yearsToFetch) {
-    const yearFile = { last_refreshed: lastRefreshed, year, columns: ['disease', ...STATE_CODES], rows: [] };
-    for (const diseaseName of diseases) {
-      const cumulative = await getYearCumulativeTotal(capacityUri, token, diseaseName, year);
-      if (!cumulative) continue;   // query failed for this disease; skip rather than crash
-      yearFile.rows.push([diseaseName, ...STATE_CODES.map(s => cumulative[s] ?? 0)]);
+  // One query per disease returns EVERY year at once, so the whole history
+  // costs ~67 requests rather than one per disease-year. Counts are that
+  // year's own total, not a running total.
+  const wanted = new Set(yearsToFetch);
+  const byYear = {};   // year -> rows[]
+  for (const year of wanted) byYear[year] = [];
+
+  for (const diseaseName of diseases) {
+    const perYear = await getCaseNumbers(capacityUri, token, diseaseName, 'year');
+    if (!perYear) throw new Error('Year query failed for ' + diseaseName);
+    for (const year of wanted) {
+      const counts = perYear[year];
+      byYear[year].push([diseaseName, ...STATE_CODES.map(s => (counts?.[s]) ?? 0)]);
     }
+  }
+
+  for (const year of yearsToFetch) {
+    const yearFile = { last_refreshed: lastRefreshed, year, columns: ['disease', ...STATE_CODES], rows: byYear[year] };
     fs.writeFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
   }
-
-  writeYearChangeMap();
-}
-
-// Reads every data/year/<year>_notifications.json on disk and writes
-// data/year/changed_years.json: { generated_from_years: [<cached years>],
-// changed_years: { <disease>: [<years where the cumulative total changed>] } }.
-// A year absent for a disease (but within generated_from_years) is FLAT —
-// identical to the prior year, so buildMonthOutput can skip it entirely. A
-// year outside generated_from_years is UNKNOWN (cache missing) and must be
-// queried live.
-function writeYearChangeMap() {
-  const years = fs.readdirSync(YEAR_CACHE_DIR)
-    .filter(f => /^\d{4}_notifications\.json$/.test(f))
-    .map(f => Number(f.split('_')[0]))
-    .sort((a, b) => a - b);
-
-  const cumulativeByYear = {};
-  for (const year of years) {
-    const yearFile = JSON.parse(fs.readFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', 'utf8'));
-    cumulativeByYear[year] = Object.fromEntries(yearFile.rows.map(([name, ...counts]) => [name, counts]));
-  }
-
-  const diseases = new Set();
-  years.forEach(y => Object.keys(cumulativeByYear[y]).forEach(d => diseases.add(d)));
-
-  const changedYears = {};
-  for (const disease of diseases) {
-    const changed = [];
-    for (const year of years) {
-      const current = cumulativeByYear[year][disease];
-      const previous = year === YEAR_FLOOR ? STATE_CODES.map(() => 0) : cumulativeByYear[year - 1]?.[disease];
-      if (!current || !previous) continue;   // gap in the cache — leave unlisted, treated as unknown, not flat
-      if (STATE_CODES.some((s, i) => current[i] !== previous[i])) changed.push(year);
-    }
-    changedYears[disease] = changed;
-  }
-
-  fs.writeFileSync(YEAR_CHANGE_MAP_PATH, JSON.stringify({ generated_from_years: years, changed_years: changedYears }));
+  console.log('Wrote ' + yearsToFetch.length + ' year file(s)');
 }
 
 // Turns the CLI's optional third arg into { year, month } periods to fetch:
 // no arg → [current period]; 'YYYYMM' → that period; 'YYYY' → every month of
-// that year; 'all' → every month from YEAR_FLOOR to now (~30k requests —
-// large enough to be a deliberate, explicit choice).
+// that year; 'all' → every month from YEAR_FLOOR to now.
 function parseMonthScope(scopeArg, currentYear, currentMonth) {
   if (!scopeArg) return [{ year: currentYear, month: currentMonth }];
   if (scopeArg === 'all') {
@@ -125,65 +97,64 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
 }
 
 // Writes one file per (year, month) in `periodsToFetch` under
-// data/month/<YYYYMM>_notifications.json — cumulative per-state totals
-// through that month, via getMonthCumulativeTotal. Optimization: if
-// changed_years.json shows a disease/year had no change from the prior year,
-// every month in it is flat — skip the live query and carry the prior total
-// forward (cuts a full 'all' rebuild from ~29k requests to ~20k). Years
-// outside the map's coverage always fall back to a live query.
+// data/month/<YYYYMM>_notifications.json — that month's own per-state counts.
+// Every period is queried live. A full 'all' rebuild costs ~1.7k requests and
+// about 5 minutes, because the disease year map skips the empty pairs below.
 async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed) {
   fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
 
-  const changeMap = fs.existsSync(YEAR_CHANGE_MAP_PATH)
-    ? JSON.parse(fs.readFileSync(YEAR_CHANGE_MAP_PATH, 'utf8'))
-    : null;
-  const yearCumulativeCache = {};   // year -> { disease -> [8 counts] }, lazily loaded
-  function yearCumulative(year, diseaseName) {
-    if (!(year in yearCumulativeCache)) {
-      const path = YEAR_CACHE_DIR + '/' + year + '_notifications.json';
-      yearCumulativeCache[year] = fs.existsSync(path)
-        ? Object.fromEntries(JSON.parse(fs.readFileSync(path, 'utf8')).rows.map(([name, ...counts]) => [name, counts]))
-        : {};
-    }
-    return yearCumulativeCache[year][diseaseName];
-  }
+  // Queried per DISEASE-YEAR: PowerBI truncates a result set at 500 year-month
+  // cells, so one query for a disease's whole history silently drops
+  // everything past ~41 years (COVID-19 stopped at 2023, months 09-12 simply
+  // absent). One year at a time returns 12 cells and cannot truncate.
+  // Counts are that month's own total, not a running total.
+  const diseaseYears = fs.existsSync(DISEASE_YEARS_PATH)
+    ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).diseases
+    : {};
 
   const periodsByYear = {};
-  for (const { year, month } of periodsToFetch) (periodsByYear[year] ??= []).push(month);
+  for (const p of periodsToFetch) (periodsByYear[p.year] ??= []).push(p.month);
 
-  const periodFiles = {};   // 'YYYYMM' -> { last_refreshed, year, month, columns, rows }
-  for (const { year, month } of periodsToFetch) {
-    const period = String(year) + String(month).padStart(2, '0');
-    periodFiles[period] = { last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: [] };
-  }
+  // Year OUTERMOST so each year's files are written as soon as they are
+  // complete: a long rebuild stays resumable and shows progress, instead of
+  // holding all 1,065 files open and losing everything on an interruption.
+  const zero = STATE_CODES.map(() => 0);
+  for (const yearStr of Object.keys(periodsByYear).sort()) {
+    const year = Number(yearStr);
+    const months = periodsByYear[year];
 
-  for (const diseaseName of diseases) {
-    for (const [yearStr, months] of Object.entries(periodsByYear)) {
-      const year = Number(yearStr);
+    const periodFiles = {};
+    for (const month of months) {
+      const period = String(year) + String(month).padStart(2, '0');
+      periodFiles[period] = { last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: [] };
+    }
 
-      const coveredByMap = changeMap?.generated_from_years.includes(year);
-      const isFlat = coveredByMap && !changeMap.changed_years[diseaseName]?.includes(year);
-      const priorTotal = year === YEAR_FLOOR ? STATE_CODES.map(() => 0) : yearCumulative(year - 1, diseaseName);
-
-      if (isFlat && priorTotal) {
-        for (const month of months) {
-          const period = String(year) + String(month).padStart(2, '0');
-          periodFiles[period].rows.push([diseaseName, ...priorTotal]);
-        }
-        continue;
+    let queried = 0;
+    for (const diseaseName of diseases) {
+      // The reference map lists the exact years each disease has cases in, not
+      // just its first and last — 22 diseases have gaps inside their span
+      // (Chlamydial infection is active in 39 of 89 years), so a year LIST
+      // skips more than a range would. An unlisted year has no cases and is
+      // written as zeros without a query.
+      const span = diseaseYears[diseaseName];
+      const skip = span && span.years && !span.years.includes(year);
+      const counts = skip ? null : await getCaseNumbers(capacityUri, token, diseaseName, 'month', year);
+      if (!skip) {
+        if (!counts) throw new Error('Month query failed for ' + diseaseName + ' ' + year);
+        queried++;
       }
 
       for (const month of months) {
-        const cumulative = await getMonthCumulativeTotal(capacityUri, token, diseaseName, year, month);
-        if (!cumulative) continue;   // query failed for this disease; skip rather than crash
+        const c = counts?.[year]?.[MONTH_NAMES[month - 1]];
         const period = String(year) + String(month).padStart(2, '0');
-        periodFiles[period].rows.push([diseaseName, ...STATE_CODES.map(s => cumulative[s] ?? 0)]);
+        periodFiles[period].rows.push([diseaseName, ...(c ? STATE_CODES.map(s => c[s] ?? 0) : zero)]);
       }
     }
-  }
 
-  for (const [period, periodFile] of Object.entries(periodFiles)) {
-    fs.writeFileSync(MONTH_CACHE_DIR + '/' + period + '_notifications.json', JSON.stringify(periodFile));
+    for (const [period, periodFile] of Object.entries(periodFiles)) {
+      fs.writeFileSync(MONTH_CACHE_DIR + '/' + period + '_notifications.json', JSON.stringify(periodFile));
+    }
+    console.log('Wrote ' + months.length + ' file(s) for ' + year + ' (' + queried + ' queried, ' + (diseases.length - queried) + ' skipped)');
   }
 }
 
