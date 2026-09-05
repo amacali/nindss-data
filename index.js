@@ -1,7 +1,7 @@
 /*******************************************************************************
   NINDSS notification scraper — pulls notifiable-disease notification counts
   for Australia from the NINDSS PowerBI dashboard. Three modes:
-    node index.js / all-time        → data/<reportDate>_notifications.json (daily, default)
+    node index.js / all-time        → data/day/<reportDate>_notifications.json (daily, default)
     node index.js year [Y|all]      → data/year/<year>_notifications.json (on request)
     node index.js month [YM|Y|all]  → data/month/<YYYYMM>_notifications.json (on request)
 
@@ -32,6 +32,7 @@
 
   // Matches the DAX_Year >= 1990 floor filter already baked into every powerbi.js query.
   const YEAR_FLOOR = 1990;
+  const DAY_CACHE_DIR = 'data/day';
   const YEAR_CACHE_DIR = 'data/year';
   const MONTH_CACHE_DIR = 'data/month';
   const YEAR_CHANGE_MAP_PATH = YEAR_CACHE_DIR + '/changed_years.json';
@@ -43,11 +44,11 @@
 // (~1 request/disease), [aYear] targeted backfill, or YEAR_FLOOR..currentYear
 // for 'all' (~2.4k requests). Afterwards rewrites changed_years.json (cheap,
 // local reads only) from whatever per-year cache files exist on disk.
-async function buildYearOutput(capacityUri, token, diseases, yearsToFetch) {
+async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed) {
   fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
 
   for (const year of yearsToFetch) {
-    const yearFile = { year, columns: ['disease', ...STATE_CODES], rows: [] };
+    const yearFile = { last_refreshed: lastRefreshed, year, columns: ['disease', ...STATE_CODES], rows: [] };
     for (const diseaseName of diseases) {
       const cumulative = await getYearCumulativeTotal(capacityUri, token, diseaseName, year);
       if (!cumulative) continue;   // query failed for this disease; skip rather than crash
@@ -130,7 +131,7 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
 // every month in it is flat — skip the live query and carry the prior total
 // forward (cuts a full 'all' rebuild from ~29k requests to ~20k). Years
 // outside the map's coverage always fall back to a live query.
-async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch) {
+async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed) {
   fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
 
   const changeMap = fs.existsSync(YEAR_CHANGE_MAP_PATH)
@@ -150,10 +151,10 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch) {
   const periodsByYear = {};
   for (const { year, month } of periodsToFetch) (periodsByYear[year] ??= []).push(month);
 
-  const periodFiles = {};   // 'YYYYMM' -> { year, month, columns, rows }
+  const periodFiles = {};   // 'YYYYMM' -> { last_refreshed, year, month, columns, rows }
   for (const { year, month } of periodsToFetch) {
     const period = String(year) + String(month).padStart(2, '0');
-    periodFiles[period] = { year, month, columns: ['disease', ...STATE_CODES], rows: [] };
+    periodFiles[period] = { last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: [] };
   }
 
   for (const diseaseName of diseases) {
@@ -247,7 +248,7 @@ async function getDiseaseList(mode, scopeArg) {
         ? Array.from({ length: currentYear - YEAR_FLOOR + 1 }, (_, i) => YEAR_FLOOR + i)
         : scopeArg ? [Number(scopeArg)]
         : [currentYear];
-      await buildYearOutput(capacityUri, token, diseases, yearsToFetch);
+      await buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed);
       return;
     }
 
@@ -259,7 +260,7 @@ async function getDiseaseList(mode, scopeArg) {
       const currentYear = Number(reportDate.slice(0, 4));
       const currentMonth = Number(reportDate.slice(4, 6));
       const periodsToFetch = parseMonthScope(scopeArg, currentYear, currentMonth);
-      await buildMonthOutput(capacityUri, token, diseases, periodsToFetch);
+      await buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed);
       return;
     }
 
@@ -277,7 +278,8 @@ async function getDiseaseList(mode, scopeArg) {
       output.rows.push([diseaseName, ...STATE_CODES.map(s => result[s] ?? 0)]);
     }
 
-    fs.writeFileSync('data/' + reportDate + '_notifications.json', JSON.stringify(output));
+    fs.mkdirSync(DAY_CACHE_DIR, { recursive: true });
+    fs.writeFileSync(DAY_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
 
     // Deprecated legacy output — daily 'all-time' runs only. See legacy.js.
     await writeLegacyCases(capacityUri, token, reportDate, diseases);
