@@ -7,7 +7,7 @@ Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`
 
 Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
-### 📅 data/day/YYYYMMDD_notifications.json (daily — all-time totals) ##
+### 📅 data/all-time/YYYYMMDD_notifications.json (daily — all-time totals) ##
 Written by the daily job (`node index.js`). One row per disease:
 ```json
 {
@@ -59,6 +59,23 @@ Generated on demand (`node index.js month`, `node index.js month 2019`, or `node
 ```
 A year that is still running holds only the months so far — 2026 has 9. A targeted run rewrites the whole year file, never a single month.
 
+### 📅 data/day/YYYYMMDD_notifications.json (rolling 30 days — that day's own count) ##
+
+One file per day, holding **that day's own per-state counts by diagnosis date** — not a running
+total. The days of a month sum to that month's file, and the months sum to the year.
+
+```json
+{ "last_refreshed": "2026-09-05T15:31:23+10:00",
+  "date": "2026-09-04",
+  "columns": ["disease","ACT","NSW","NT","QLD","SA","TAS","VIC","WA"],
+  "rows": [ ["Anthrax",0,0,0,0,0,0,0,0], … ] }
+```
+
+**The newest days are incomplete.** A diagnosis reaches the system days after the fact, so the
+most recent dates read low and keep rising for weeks. Do not read the tail-off as a real fall in
+cases. Each run rebuilds the whole 30-day window, so every file self-corrects as the late
+diagnoses arrive.
+
 ### 📅 data/legacy/YYYYMMDD_cases.json (daily — deprecated) ##
 Written alongside the daily all-time file for backwards compatibility with an old consumer; slated for removal, format frozen. A flat array of per disease/year/state records, not the `columns`/`rows` shape used elsewhere:
 ```json
@@ -70,12 +87,12 @@ Written alongside the daily all-time file for backwards compatibility with an ol
 | Field | Description |
 | --- | --- |
 | `report_date` | Reporting date AEDT, also used as the filename prefix (all-time file only) |
-| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/day/` and `data/year/` file, and in every month element of a `data/month/` file. Use it to tell when a period was last regenerated |
+| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/all-time/` and `data/year/` file, and in every month element of a `data/month/` file. Use it to tell when a period was last regenerated |
 | `year` / `month` | The period the counts in `rows` cover. `year` in `data/year/`; both in each element of a `data/month/` file |
 | `columns` | Column order for every entry in `rows` |
 | `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts for the file's own period |
 
-Load a `data/day/` or `data/year/` file into MySQL in a single pass:
+Load a `data/all-time/` or `data/year/` file into MySQL in a single pass:
 ```sql
 SELECT t.* FROM notifications,
 JSON_TABLE(doc, '$.rows[*]' COLUMNS (
@@ -103,10 +120,12 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **13 Jul 2026** split the output into three granularities queried directly (to avoid `<5`-cell masking accumulating when summing): the daily `_notifications.json` now carries **all-time totals** (no year column), with per-year available on request as `_notifications_year.json` and per-month as `_notifications_month.json`. Note the daily file's schema changed — it no longer has a `year` column.
 - **18 Jul 2026** replaced the combined `_notifications_year.json`/`_notifications_month.json` snapshots with per-period cache files under `data/year/<year>_notifications.json` and `data/month/<YYYYMM>_notifications.json`, each holding a cumulative total through that period rather than a per-period delta; moved the deprecated legacy schema to `data/legacy/<reportDate>_cases.json`
 - **5 Sep 2026** moved the daily snapshots from the top level of `data/` into `data/day/<reportDate>_notifications.json`, so the 3 granularities each sit in their own folder (`data/day/`, `data/year/`, `data/month/`). The file shape is unchanged, but any consumer that reads the old top-level path needs the new path. `data/legacy/` did not move.
+- **6 Sep 2026** renamed `data/day/` to `data/all-time/`. The folder holds cumulative totals to date, not a single day's count, so the old name contradicted `data/year/` and `data/month/`, which both hold their own period's count. The file shape and name are unchanged. `data/day/` now holds daily counts (see the next entry).
+- **6 Sep 2026** added `data/day/<YYYYMMDD>_notifications.json`, a rolling 30-day window of per-day counts by diagnosis date — the same basis as `data/year/` and `data/month/`, and the dashboard's own default filter. Days sum to months and months to years, verified to 0 difference across all 67 diseases. The newest days are incomplete by nature and keep rising, so each run rebuilds the whole window.
 - **5 Sep 2026** added `last_refreshed` to every `data/year/` and `data/month/` file, as the first key, so a consumer can tell when a period file was last regenerated. New runs take the value from the dashboard, the same source the daily file uses. Existing files carry the timestamp of the commit that wrote them.
 - **5 Sep 2026 — version 3.0 (unmasked)** switched every query to the `Count_Notification` measure, which returns the counts the dashboard suppresses as `n.p`. Cells that read 0 because the true value was below 5 now carry that value. The daily file recovered 41 cells, and the rebuilt year history recovered 1,684 across 60 diseases. Rabies was added upstream the same day and appears with 1 QLD case.
 
-  Nothing was lost: no cell fell except where the dashboard itself revised the figure. The pre-3.0 snapshots were kept for comparison and then discarded once the rebuild was verified. `data/day/` now holds only version 3.0 files.
+  Nothing was lost: no cell fell except where the dashboard itself revised the figure. The pre-3.0 snapshots were kept for comparison and then discarded once the rebuild was verified. `data/all-time/` (then `data/day/`) now holds only version 3.0 files.
 
 - **6 Sep 2026 — per-period counts** `data/year/` and `data/month/` now hold **each period's own count** rather than a cumulative total through that period. A consumer that subtracted the prior period to get a delta must stop doing so, or it will double-subtract. The full history was rebuilt: 89 year files and 1,065 month files, from 1938.
 
