@@ -27,7 +27,7 @@ on:
 
 jobs:
   archive:
-    timeout-minutes: 30
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
@@ -60,10 +60,9 @@ jobs:
           echo "stale=false" >> "$GITHUB_OUTPUT"
         fi
     - name: Run script
-      # Scheduled runs pass no input → run all-time, day, year, and month (each
-      # with no scope arg, so year/month only ever refresh the current period
-      # and day only its rolling 30-day window, never a full backfill).
-      # Manual dispatch runs only the selected mode.
+      # Scheduled runs pass no input → run all four modes. Each rebuilds its
+      # whole file: ~15s all-time, ~25s day, ~10s year, ~28s month, about 80s
+      # and 333 requests in total. Manual dispatch runs only the selected mode.
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -74,7 +73,7 @@ jobs:
           node index.js year
           node index.js month
         fi
-      timeout-minutes: 25
+      timeout-minutes: 15
     - name: Push data
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |

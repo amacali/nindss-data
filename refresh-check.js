@@ -16,31 +16,27 @@
 
   // Newest last_refreshed across the folders a scheduled run writes. A folder
   // with no files reads as null, which forces the scrape.
+  // Every mode now writes one flat file in data/. The OLDEST timestamp across
+  // them gates the run: if any is behind the source, there is work to do.
+  const DATA_FILES = [
+    'data/notifications_all_time.json',
+    'data/notifications_by_day.json',
+    'data/notifications_by_month.json',
+    'data/notifications_by_year.json'
+  ];
+
   function storedRefresh() {
-    // Folders hold one file per period; data/notifications_by_year.json is a
-    // single file. Both are checked — the OLDEST timestamp gates the run.
-    const dirs = ['data/all-time', 'data/day', 'data/month'];
-    const files = ['data/notifications_by_year.json'];
-    let newest = null;
-    const consider = doc => {
-      // Array documents (a month file, the year file) carry the stamp on each
-      // element; a plain object carries it at the top.
-      const stamp = Array.isArray(doc) ? doc[doc.length - 1]?.last_refreshed : doc.last_refreshed;
-      if (!stamp) return false;
-      if (newest === null || stamp < newest) newest = stamp;
-      return true;
-    };
-    for (const dir of dirs) {
-      if (!fs.existsSync(dir)) return null;
-      const found = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
-      if (!found.length) return null;
-      if (!consider(JSON.parse(fs.readFileSync(dir + '/' + found[found.length - 1], 'utf8')))) return null;
-    }
-    for (const file of files) {
+    let oldest = null;
+    for (const file of DATA_FILES) {
       if (!fs.existsSync(file)) return null;
-      if (!consider(JSON.parse(fs.readFileSync(file, 'utf8')))) return null;
+      const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Array documents (day/month/year) carry the stamp on each element; the
+      // all-time file carries it at the top.
+      const stamp = Array.isArray(doc) ? doc[doc.length - 1]?.last_refreshed : doc.last_refreshed;
+      if (!stamp) return null;
+      if (oldest === null || stamp < oldest) oldest = stamp;
     }
-    return newest;
+    return oldest;
   }
 
   const { capacityUri, token } = await getToken();

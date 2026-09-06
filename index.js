@@ -32,44 +32,82 @@
   const YEAR_FLOOR = fs.existsSync(DISEASE_YEARS_PATH)
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
     : 1938;
-  const ALL_TIME_CACHE_DIR = 'data/all-time';
-  const DAY_CACHE_DIR = 'data/day';
+  const ALL_TIME_FILE = 'data/notifications_all_time.json';
+  const DAY_FILE = 'data/notifications_by_day.json';
   // Days kept in the rolling data/day/ window. Diagnosis date arrives late, so
   // the newest days are always incomplete and keep rising for weeks; rebuilding
   // the whole window each run lets every file self-correct.
   const DAY_WINDOW = 30;
   const YEAR_FILE = 'data/notifications_by_year.json';
-  const MONTH_CACHE_DIR = 'data/month';
+  const MONTH_FILE = 'data/notifications_by_month.json';
+  // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
+  const MONTH_BLOCK = 25;
+  const RUN_LOG = 'data/ref_run_log.json';
 
-// Writes one file per DAY under data/day/<YYYYMMDD>_notifications.json,
-// holding that day's OWN per-state counts by DIAGNOSIS_DATE — not a running
-// total, matching how data/year/ and data/month/ work.
+  // Every PowerBI request goes through getCaseNumbers, so counting calls here
+  // gives an exact request count per run without touching the client.
+  const metrics = { requests: 0 };
+  const countedGetCaseNumbers = (...args) => { metrics.requests++; return getCaseNumbers(...args); };
+
+  // Appends one entry per run: what ran, how long it took, how many requests it
+  // cost. Keeps the last 100 so the file stays small and queryable.
+  function logRun(mode, scopeArg, startedAt, outcome) {
+    const entry = {
+      mode, scope: scopeArg || null,
+      started_at: new Date(startedAt).toISOString(),
+      seconds: Number(((Date.now() - startedAt) / 1000).toFixed(1)),
+      requests: metrics.requests,
+      ...outcome
+    };
+    let log = [];
+    if (fs.existsSync(RUN_LOG)) { try { log = JSON.parse(fs.readFileSync(RUN_LOG, 'utf8')); } catch {} }
+    log.push(entry);
+    fs.writeFileSync(RUN_LOG, JSON.stringify(log.slice(-100), null, 2));
+    console.log(`[${mode}] ${entry.seconds}s, ${entry.requests} requests`);
+  }
+
+// Writes data/notifications_by_day.json: an ARRAY of day objects, each holding
+// that day's OWN per-state counts by diagnosis date.
 //
-// Costs one query per disease-day (~67 per day, ~13s), because the date filter
-// takes a single range rather than a period dimension to group on. A 30-day
-// window is ~2,010 requests and about 7 minutes.
+// ONE query per disease covers the whole window, not one per disease-day: the
+// query groups on DIAGNOSIS_DATE (primary) with STATE secondary, so a 30-day
+// window is 67 requests and ~9s rather than 2,010 and 5 minutes. The date
+// arrives as G0 on each row, the same single-primary-dimension shape 'year'
+// mode reads its year from.
 //
-// The newest days read low and are NOT final: a diagnosis reaches the system
+// The window must stay under the 500-row cap that applies whenever a secondary
+// axis is present: one row per day with cases, so ~365 days is the ceiling.
+//
+// The newest days read low and are NOT final — a diagnosis reaches the system
 // days later, so those counts keep rising. Rebuilding the whole window each
 // run is what corrects them.
 async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed) {
-  fs.mkdirSync(DAY_CACHE_DIR, { recursive: true });
+  const from = daysToFetch[0];
+  const to = daysToFetch[daysToFetch.length - 1];
+  const range = {
+    from: from.slice(0, 4) + '-' + from.slice(4, 6) + '-' + from.slice(6, 8),
+    to: new Date(Date.UTC(+to.slice(0, 4), +to.slice(4, 6) - 1, +to.slice(6, 8) + 1))
+          .toISOString().slice(0, 10)
+  };
 
-  for (const day of daysToFetch) {
-    const from = day.slice(0, 4) + '-' + day.slice(4, 6) + '-' + day.slice(6, 8);
-    const to = new Date(Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6, 8) + 1))
-                 .toISOString().slice(0, 10);
-    const rows = [];
-    for (const diseaseName of diseases) {
-      const counts = await getCaseNumbers(capacityUri, token, diseaseName, 'day', undefined, { from, to });
-      if (!counts) throw new Error('Day query failed for ' + diseaseName + ' on ' + day);
-      rows.push([diseaseName, ...STATE_CODES.map(st => counts[st] ?? 0)]);
+  const byDay = {};                       // 'YYYY-MM-DD' -> rows[]
+  for (const day of daysToFetch) byDay[day.slice(0,4)+'-'+day.slice(4,6)+'-'+day.slice(6,8)] = [];
+
+  for (const diseaseName of diseases) {
+    const perDay = await countedGetCaseNumbers(capacityUri, token, diseaseName, 'day', undefined, range);
+    if (!perDay) throw new Error('Day query failed for ' + diseaseName);
+    for (const date of Object.keys(byDay)) {
+      const counts = perDay[date];
+      byDay[date].push([diseaseName, ...STATE_CODES.map(st => (counts?.[st]) ?? 0)]);
     }
-    const dayFile = { last_refreshed: lastRefreshed, date: from,
-                      columns: ['disease', ...STATE_CODES], rows };
-    fs.writeFileSync(DAY_CACHE_DIR + '/' + day + '_notifications.json', JSON.stringify(dayFile));
   }
-  console.log('Wrote ' + daysToFetch.length + ' day file(s)');
+
+  const dayFile = Object.keys(byDay).sort().map(date => ({
+    last_refreshed: lastRefreshed, date,
+    columns: ['disease', ...STATE_CODES], rows: byDay[date]
+  }));
+  fs.writeFileSync(DAY_FILE, JSON.stringify(dayFile));
+  console.log('Wrote ' + dayFile.length + ' days to ' + DAY_FILE);
 }
 
 // Turns the CLI's optional third arg into a list of 'YYYYMMDD' days, newest
@@ -113,7 +151,7 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastR
   for (const year of allYears) byYear[year] = [];
 
   for (const diseaseName of diseases) {
-    const perYear = await getCaseNumbers(capacityUri, token, diseaseName, 'year');
+    const perYear = await countedGetCaseNumbers(capacityUri, token, diseaseName, 'year');
     if (!perYear) throw new Error('Year query failed for ' + diseaseName);
     for (const year of allYears) {
       const counts = perYear[year];
@@ -158,86 +196,72 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
   throw new Error("invalid month scope '" + scopeArg + "' — expected YYYYMM, YYYY, or 'all'");
 }
 
-// Writes one file per YEAR under data/month/<year>_notifications.json. The
-// file is an ARRAY of the 12 month objects, each holding that month's own
-// per-state counts in the same full shape it had as its own file.
-// `periodsToFetch` only picks WHICH years are written; each of those is always
-// rebuilt whole (see below). A full 'all' rebuild costs ~1.7k requests and
-// about 5 minutes, because the disease year map skips the empty pairs.
+// Writes data/notifications_by_month.json: an ARRAY of month objects, each
+// holding that month's OWN per-state counts.
+//
+// Queried per DISEASE-BLOCK of MONTH_BLOCK years, not per disease-year: one
+// query returns every month in the block, so the full history costs ~132
+// requests rather than ~1,745. A 25-year block is at most 300 cells, under the
+// 500-row cap that applies whenever a secondary axis is present (Window.Count
+// does NOT raise that cap — 500, 1000, 5000 and 20000 all return exactly 500).
+//
+// The file is always written WHOLE, for the same reason the year file is: a
+// scoped run would otherwise drop every period it did not target.
 async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed, reportYear, reportMonth) {
-  fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
-
-  // Queried per DISEASE-YEAR: PowerBI truncates a result set at 500 year-month
-  // cells, so one query for a disease's whole history silently drops
-  // everything past ~41 years (COVID-19 stopped at 2023, months 09-12 simply
-  // absent). One year at a time returns 12 cells and cannot truncate.
-  // Counts are that month's own total, not a running total.
   const diseaseYears = fs.existsSync(DISEASE_YEARS_PATH)
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).diseases
     : {};
 
-  const periodsByYear = {};
-  for (const p of periodsToFetch) (periodsByYear[p.year] ??= []).push(p.month);
-
-  // Year OUTERMOST so each year's files are written as soon as they are
-  // complete: a long rebuild stays resumable and shows progress, instead of
-  // holding all 1,065 files open and losing everything on an interruption.
-  const zero = STATE_CODES.map(() => 0);
-  for (const yearStr of Object.keys(periodsByYear).sort()) {
-    const year = Number(yearStr);
-
-    // A year file must always be written WHOLE, so the months come from the
-    // year rather than from the scope. Narrowing it to the requested months
-    // would drop the other 11 from the file — and the CI cron requests one
-    // month, so that would truncate the current year on every run. Costs
-    // nothing: one query already returns all 12 months of a disease-year.
-    const lastMonth = year === Number(reportYear) ? Number(reportMonth) : 12;
-    const months = Array.from({ length: lastMonth }, (_, i) => i + 1);
-    const byMonth = {};
-    for (const month of months) byMonth[month] = [];
-
-    // One file per YEAR, and the file IS an array of the 12 month objects.
-    // Each keeps the full header it had as its own file — last_refreshed,
-    // year, month, columns, rows — so `month` sits beside `year` rather than
-    // above it, and a consumer can lift one element out unchanged.
-    const yearFile = [];
-
-    let queried = 0;
-    for (const diseaseName of diseases) {
-      // The reference map lists the exact years each disease has cases in, not
-      // just its first and last — 22 diseases have gaps inside their span
-      // (Chlamydial infection is active in 39 of 89 years), so a year LIST
-      // skips more than a range would. An unlisted year has no cases and is
-      // written as zeros without a query.
-      const span = diseaseYears[diseaseName];
-      const skip = span && span.years && !span.years.includes(year);
-      const counts = skip ? null : await getCaseNumbers(capacityUri, token, diseaseName, 'month', year);
-      if (!skip) {
-        if (!counts) throw new Error('Month query failed for ' + diseaseName + ' ' + year);
-        queried++;
-      }
-
-      for (const month of months) {
-        const c = counts?.[year]?.[MONTH_NAMES[month - 1]];
-        byMonth[month].push([diseaseName, ...(c ? STATE_CODES.map(s => c[s] ?? 0) : zero)]);
-      }
-    }
-
-    // The rows arrive grouped by disease, so collect per month first and add
-    // the months in order.
-    for (const month of months) {
-      yearFile.push({ last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: byMonth[month] });
-    }
-
-    fs.writeFileSync(MONTH_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
-    console.log('Wrote ' + year + ': ' + months.length + ' month(s), ' + (months.length * diseases.length) + ' rows (' + queried + ' queried, ' + (diseases.length - queried) + ' skipped)');
+  const maxYear = Number(reportYear);
+  const blocks = [];
+  for (let y = YEAR_FLOOR; y <= maxYear; y += MONTH_BLOCK) {
+    blocks.push([y, Math.min(y + MONTH_BLOCK - 1, maxYear)]);
   }
+
+  // year -> month -> rows[]
+  const byPeriod = {};
+  for (let year = YEAR_FLOOR; year <= maxYear; year++) {
+    const lastMonth = year === maxYear ? Number(reportMonth) : 12;
+    byPeriod[year] = {};
+    for (let m = 1; m <= lastMonth; m++) byPeriod[year][m] = [];
+  }
+
+  const zero = STATE_CODES.map(() => 0);
+  for (const diseaseName of diseases) {
+    // The reference map lists the exact years each disease has cases in, so a
+    // block with none is skipped entirely rather than queried for zeros.
+    const span = diseaseYears[diseaseName];
+    const merged = {};
+    for (const [from, to] of blocks) {
+      if (span && span.years && !span.years.some(y => y >= from && y <= to)) continue;
+      const perYearMonth = await countedGetCaseNumbers(capacityUri, token, diseaseName, 'month', [from, to]);
+      if (!perYearMonth) throw new Error('Month query failed for ' + diseaseName + ' ' + from + '-' + to);
+      for (const y of Object.keys(perYearMonth)) merged[y] = { ...(merged[y] || {}), ...perYearMonth[y] };
+    }
+    for (const year of Object.keys(byPeriod)) {
+      for (const month of Object.keys(byPeriod[year])) {
+        const counts = merged[year]?.[MONTH_NAMES[month - 1]];
+        byPeriod[year][month].push(counts
+          ? [diseaseName, ...STATE_CODES.map(st => counts[st] ?? 0)]
+          : [diseaseName, ...zero]);
+      }
+    }
+  }
+
+  const monthFile = [];
+  for (let year = YEAR_FLOOR; year <= maxYear; year++) {
+    for (const month of Object.keys(byPeriod[year]).map(Number).sort((a, b) => a - b)) {
+      monthFile.push({ last_refreshed: lastRefreshed, year, month,
+                       columns: ['disease', ...STATE_CODES], rows: byPeriod[year][month] });
+    }
+  }
+  fs.writeFileSync(MONTH_FILE, JSON.stringify(monthFile));
+  console.log('Wrote ' + monthFile.length + ' months to ' + MONTH_FILE);
 }
 
-// Entry point: fetches the disease list, then dispatches to buildYearOutput,
-// buildMonthOutput, or (for 'all-time') the loop below.
 async function getDiseaseList(mode, scopeArg) {
 
+  const startedAt = Date.now();
   const { capacityUri, token } = await getToken();
   const { reportDate, lastRefreshed } = await getLatestUpdateDate(capacityUri,token);
 
@@ -290,6 +314,7 @@ async function getDiseaseList(mode, scopeArg) {
     if (mode === 'day') {
       const daysToFetch = parseDayScope(scopeArg, reportDate);
       await buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed);
+      logRun(mode, scopeArg, startedAt, { days: daysToFetch.length, file: DAY_FILE });
       return;
     }
 
@@ -303,6 +328,7 @@ async function getDiseaseList(mode, scopeArg) {
         : scopeArg ? [Number(scopeArg)]
         : [currentYear];
       await buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed);
+      logRun(mode, scopeArg, startedAt, { file: YEAR_FILE });
       return;
     }
 
@@ -315,6 +341,7 @@ async function getDiseaseList(mode, scopeArg) {
       const currentMonth = Number(reportDate.slice(4, 6));
       const periodsToFetch = parseMonthScope(scopeArg, currentYear, currentMonth);
       await buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed, currentYear, currentMonth);
+      logRun(mode, scopeArg, startedAt, { file: MONTH_FILE });
       return;
     }
 
@@ -327,13 +354,14 @@ async function getDiseaseList(mode, scopeArg) {
     };
 
     for(const diseaseName of diseases){
-      const result = await getCaseNumbers(capacityUri,token,diseaseName,mode);
+      const result = await countedGetCaseNumbers(capacityUri,token,diseaseName,mode);
       if (!result) continue;   // query failed for this disease; skip rather than crash
       output.rows.push([diseaseName, ...STATE_CODES.map(s => result[s] ?? 0)]);
     }
 
-    fs.mkdirSync(ALL_TIME_CACHE_DIR, { recursive: true });
-    fs.writeFileSync(ALL_TIME_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
+    fs.writeFileSync(ALL_TIME_FILE, JSON.stringify(output));
+    console.log('Wrote ' + output.rows.length + ' diseases to ' + ALL_TIME_FILE);
+    logRun(mode, scopeArg, startedAt, { diseases: output.rows.length, file: ALL_TIME_FILE });
 
   } catch (error) {
     console.log(error);

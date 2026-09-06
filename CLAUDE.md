@@ -9,10 +9,10 @@ Scrapes daily notifiable-disease notification snapshots for Australia from the N
 ## Commands
 
 - Install dependencies: `npm install`
-- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/all-time/<report_date>_notifications.json`)
-- Run the per-year breakdown (on request): `node index.js year` (current year only, default), `node index.js year 2019` (one year), or `node index.js year all` (full history) — writes `data/year/<year>_notifications.json` per year. One query per disease returns every year at once, so all 3 scopes cost the same ~67 requests
-- Run the daily history (on request): `node index.js day` (rolling 30 days, default), `node index.js day 20260904` (one day), or `node index.js day 202609` (one month of days) — writes `data/day/<YYYYMMDD>_notifications.json` per day. Costs one query per disease-day: ~13s a day, ~5 minutes for the 30-day window
-- Run the monthly history (on request): `node index.js month` (current year+month only, default), `node index.js month 2019` (a whole year), or `node index.js month all` (full history rebuild, ~1.7k requests and about 5 minutes) — writes `data/month/<year>_notifications.json`, one file per year holding an array of that year's months — see Architecture
+- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~15s, 67 requests)
+- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~10s, 67 requests
+- Run the daily history: `node index.js day` (rolling 30 days) — writes `data/notifications_by_day.json`, ~25s, 67 requests
+- Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~28s, 132 requests
 - There are no tests, lint, or build steps configured (`npm test` is a stub that always fails).
 - README.md (the data-consumer-facing schema doc) is not auto-checked against the code and can drift stale — verify its file paths/shapes against `data/` and this file before trusting it.
 
@@ -31,15 +31,31 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   2. `getToken()` — exchanges the embed token for a short-lived MWC token and capacity URI via PowerBI's `modelsAndExploration` endpoint.
   3. `getLatestUpdateDate()` — queries the `DataRefreshAEST` table (the same source backing the dashboard's "Last refreshed on" card) and returns both `reportDate` (`YYYYMMDD`, used for the filename/grouping key) and `lastRefreshed` (full AEST/AEDT timestamp, same underlying value with time preserved).
   4. `getCaseNumbers(..., mode)` — queries `NOTIFIABLE_EVENT_FACT` joined with `LOCATION_DIM`/`DISEASE_DIM`/`CASE_DIM` for per-state notification counts for one disease (restricted to Confirmed/Probable cases and excluding the `Hepatitis C (<24 months)` and `Unknown` disease groups). `mode` drives the query granularity AND return shape: `all-time` → `{ <state>: count }`; `year` → `{ <year>: { <state>: count } }`; `month` → `{ <year>: { <month>: { <state>: count } } }`. Each mode is queried at its own granularity, never derived from a finer one. This is the only query path: `all-time` and both `index.js` build functions come through it. An optional 5th arg `onlyYear` restricts a `month` query to one `DAX_Year` — needed because PowerBI truncates a result set at 500 year-month cells, which silently drops everything past ~41 years.
-  5. `data/reference/disease_years.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip the query for a disease-year with no data, which is most of them: only 1,745 of 5,963 disease-year pairs are populated, so a full month rebuild costs ~1.7k requests rather than ~6k. A missing map is safe — every year then falls back to a live query.
+  5. `data/ref_disease_years.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 132. A missing map is safe — every block then falls back to a live query.
+
+     The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years. `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973).
 
      The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years.
 
      `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973) and made `all-time` disagree with the year files.
-- `index.js` — the entry point. First CLI arg selects the mode (defaulting to `'all-time'`); `year`/`month` take an optional second `scopeArg` (see below). `getDiseaseList(mode, scopeArg)` queries the `DISEASE_DIM` table for all disease names, then dispatches: `all-time` falls through to a plain loop calling `getCaseNumbers(..., 'all-time')` per disease and writes `data/all-time/<reportDate>_notifications.json`; `year`/`month` each delegate entirely to their own build function, writing exclusively under `data/year/`/`data/month/` — neither writes anything at the top level, and neither produces a combined "whole dataset in one file" snapshot (removed as redundant — the per-period cache files under `data/year/`/`data/month/` ARE the dataset; a combined file named by scrape date just left a new near-duplicate behind on every run instead of being reused in place).
-  - `buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed)` — writes one file per `DAX_Year` in `yearsToFetch` under `data/year/<year>_notifications.json`, holding **that year's own per-state counts, not a running total**. One `getCaseNumbers(..., 'year')` call per disease returns every year at once, so all scopes cost the same ~67 requests and `yearsToFetch` only picks which years get written. Scope from `scopeArg`: no arg → `[currentYear]`; a specific year → that year; `'all'` → `YEAR_FLOOR`..current. Targeted years are always fetched live and overwritten, never reused from an existing file.
-  - `parseMonthScope(scopeArg, currentYear, currentMonth)` — turns `scopeArg` into `{ year, month }` periods. Only the YEAR of each matters: `buildMonthOutput` rebuilds a whole year at a time, so `'YYYYMM'` and `'YYYY'` both mean "rewrite that year's file".
-  - `buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed, reportYear, reportMonth)` — one file per YEAR under `data/month/<year>_notifications.json`. The file is an ARRAY of month objects, each keeping the full `{ last_refreshed, year, month, columns, rows }` shape it had as its own file, holding **that month's own per-state counts**. A year file is always written WHOLE — the months come from the year, not from `periodsToFetch` — because the CI cron requests a single month and would otherwise truncate the current year on every run. This costs nothing: one query already returns all 12 months of a disease-year. Queried per DISEASE-YEAR, not per disease: one query for a whole history hits PowerBI's 500-cell truncation, while one year returns 12 cells and cannot truncate. Skips the query entirely for any disease-year absent from `disease_years.json` and writes zeros. Loops year OUTERMOST, so each year's files land as soon as that year completes and an interrupted rebuild keeps what it finished.
+- `index.js` — the entry point. First CLI arg selects the mode (`all-time` default, or `day`/`year`/`month`), with an optional second `scopeArg`. `getDiseaseList(mode, scopeArg)` queries `DISEASE_DIM` for the disease names, then delegates to one build function per mode. Every mode writes ONE flat file in `data/` and always rebuilds it whole — a scoped run would otherwise drop every period it did not target. Each build routes its queries through `countedGetCaseNumbers`, so `logRun` can record the exact request count in `data/ref_run_log.json`.
+
+  **Request cost per mode**, measured and logged. Each is one query per disease, except `month`:
+
+  | Mode | Requests | Seconds |
+  | --- | --- | --- |
+  | `all-time` | 67 | ~15 |
+  | `year` (full history) | 67 | ~10 |
+  | `day` (30-day window) | 67 | ~25 |
+  | `month` (full history) | 132 | ~28 |
+
+  - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost.
+  - `buildDayOutput` — one query per disease covers the WHOLE window, grouping on `DIAGNOSIS_DATE` (primary) with STATE secondary. The date arrives as `G0`, the same single-primary-dimension shape `year` uses. Keep the window under ~365 days: one row per day with cases, against the 500-row cap.
+  - `buildMonthOutput` — one query per disease-BLOCK of `MONTH_BLOCK` (25) years. 25 × 12 = 300 cells, under the cap. `ref_disease_years.json` skips a block a disease has no years in, which is what keeps this at 132 rather than 335.
+
+  **The 500-row cap is the constraint behind all of this.** It applies whenever a SECONDARY axis is present, and `Window.Count` does NOT raise it — 500, 1000, 5000 and 20000 all return exactly 500 rows. It is SILENT: three different diseases returned identical spans ending at the same date, which only looked wrong because they were compared. Any query returning exactly 500 rows must be treated as truncated.
+
+  Dropping the secondary axis DOES lift the cap (13,379 rows returned), but then `Count_Notification` returns 0 under a date grouping, and the `_forgraph` measure that does work re-applies the <5 mask — verified: Rabies 2026 QLD (true value 1) and Measles 2019 ACT (true value 2) both came back 0. So per-state counts and a long history cannot be had in one query. This is why `day` is windowed and `month` is blocked.
 
 All PowerBI requests are raw `fetch` calls with hand-built DAX query JSON bodies (`SemanticQueryDataShapeCommand`) sent as strings — there is no query builder abstraction. If PowerBI changes its dataset/report IDs or query shape, these request bodies (`DatasetId`, `ReportId`, `VisualId`, column/entity names) are what break and need updating.
 
@@ -51,16 +67,20 @@ Response parsing relies on PowerBI's compact `dsr.DS[0]` result-set format (`PH`
 
 ## Data output
 
-All `_notifications*` files use a flat, MySQL-friendly shape chosen so they load via a single `JSON_TABLE('$.rows[*]' …)` call. State counts are inlined in the fixed `STATE_CODES` order defined in `powerbi.js`; AUS/national is excluded by the query. Counts are unmasked as of version 3.0. Each file is still queried at its own granularity; totals across granularities are close but need not agree exactly, because the dashboard revises past counts and each file is only as current as its own `last_refreshed`.
+Seven flat files in `data/`, no subfolders. The four `notifications_*` files are the dataset; the three `ref_*` files are reference data the scraper writes for itself.
 
-- `data/all-time/YYYYMMDD_notifications.json` (daily, all-time totals) — `{ report_date, last_refreshed, columns: ["disease",<8 states>], rows: [ [disease, ...8 counts], … ] }`. 67 rows (one per disease), no `year` column.
-- `data/day/<YYYYMMDD>_notifications.json` — one per day (e.g. `20260904_notifications.json`), `{ last_refreshed, date, columns: ["disease",<8 states>], rows }`. **That day's own per-state counts by diagnosis date.** The days of a month sum to that month's file. A rolling 30-day window, rebuilt whole on each `node index.js day` run; the newest days are incomplete until late diagnoses arrive.
-- `data/year/` — everything `year` mode produces; named by year, not by the `<reportDate>_...` scrape date that `data/all-time/` uses. No combined "whole dataset" file — downstream consumers read the per-year files directly.
-  - `data/year/<year>_notifications.json` — one per `DAX_Year` (bare 4-digit year, e.g. `2019_notifications.json`), `{ last_refreshed, year, columns: ["disease",<8 states>], rows }`. **That year's own per-state counts, not a running total** — a consumer must NOT subtract the prior year. Only rewritten when explicitly targeted by `node index.js year [Y|all]`.
-- `data/month/` — everything `month` mode produces, mirroring `data/year/` one level finer. No combined file here either.
-  - `data/month/<year>_notifications.json` — one per year (bare 4-digit year), an ARRAY of that year's months. Each element is `{ last_refreshed, year, month, columns: ["disease",<8 states>], rows }` — **that month's own per-state counts**. The 12 months sum to that year's file in `data/year/`. A running year holds only the months so far. Rewritten whole when targeted by `node index.js month [Y|all]`.
+Each `notifications_by_*` file is an ARRAY of period objects, each keeping the full `{ last_refreshed, <period>, columns, rows }` shape. `columns` is `["disease", <8 state codes>]` in the fixed `STATE_CODES` order; AUS/national is excluded by the query. Counts are unmasked (version 3.0) and are that period's OWN count, never a running total — a consumer must NOT subtract the prior period.
 
-New files accumulate via the CI workflow; existing files are never rewritten by hand — except everything under `data/year/` and `data/month/`, which are long-lived and overwritten in place: a year's file (`data/year/<year>_notifications.json` / `data/month/<year>_notifications.json`) only when that year is explicitly targeted by `node index.js year [Y|all]` / `node index.js month [YM|Y|all]` (every other year's file is left untouched). Backfilling a full range (`node index.js year all` / `node index.js month all`) is a manual, deliberate operation — the CI cron only ever passes `year`/`month` with no scope arg (current year only). A full `month all` rebuild is ~1.7k requests and about 5 minutes, so it is affordable, but it still overwrites all 89 files. No historical data predates the current schema — old snapshots were deleted rather than migrated. (The bare `_notifications.json` name previously held year totals, and before that an even earlier same-day iteration nested `data.<disease>.<year>.<month>.<code>`, dropped because nested object keys can't be unnested by MySQL's `JSON_TABLE`.)
+- `data/notifications_all_time.json` — `{ report_date, last_refreshed, columns, rows }`, one row per disease, cumulative to date. Not an array.
+- `data/notifications_by_day.json` — 30 elements, keyed `date` (`YYYY-MM-DD`). A rolling window, always rebuilt whole.
+- `data/notifications_by_month.json` — 1,065 elements, keyed `year` + `month`.
+- `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
+- `data/ref_disease_groups.json`, `data/ref_disease_years.json` — see Architecture.
+- `data/ref_run_log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
+
+Days sum to months and months to years, verified to 0 difference across 618,544 cells. Every file is rebuilt WHOLE on each run, because a scoped run would otherwise drop every period it did not target.
+
+**The newest day entries are incomplete.** A diagnosis reaches the system days after the fact, so recent dates read low and keep rising for weeks. Do not read the tail-off as a real fall.
 
 ## CI
 
