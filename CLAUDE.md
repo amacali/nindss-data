@@ -38,7 +38,7 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
      The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years.
 
      `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973) and made `all-time` disagree with the year files.
-- `index.js` — the entry point. First CLI arg selects the mode (`all-time` default, or `day`/`year`/`month`), with an optional second `scopeArg`. `getDiseaseList(mode, scopeArg)` queries `DISEASE_DIM` for the disease names, then delegates to one build function per mode. Every mode writes ONE flat file in `data/` and always rebuilds it whole — a scoped run would otherwise drop every period it did not target. Each build routes its queries through `countedGetCaseNumbers`, so `logRun` can record the exact request count in `data/ref_run_log.json`.
+- `index.js` — the entry point. First CLI arg selects the mode (`all-time` default, or `day`/`year`/`month`), with an optional second `scopeArg`. `getDiseaseList(mode, scopeArg)` queries `DISEASE_DIM` for the disease names, then delegates to one build function per mode. Every mode writes ONE flat file in `data/` and always rebuilds it whole — a scoped run would otherwise drop every period it did not target. Each build routes its queries through `countedGetCaseNumbers`, so `logRun` can record the exact request count in `data/log.json`.
 
   **Request cost per mode**, measured and logged. Each is one query per disease, except `month`:
 
@@ -76,7 +76,7 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_by_month.json` — 1,065 elements, keyed `year` + `month`.
 - `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
 - `data/ref_disease_groups.json`, `data/ref_disease_years.json` — see Architecture.
-- `data/ref_run_log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
+- `data/log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
 
 Days sum to months and months to years, verified to 0 difference across 618,544 cells. Every file is rebuilt WHOLE on each run, because a scoped run would otherwise drop every period it did not target.
 

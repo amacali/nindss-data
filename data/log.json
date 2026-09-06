@@ -32,5 +32,14 @@
     "seconds": 33.6,
     "requests": 132,
     "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-09-06T03:43:59.514Z",
+    "seconds": 13,
+    "requests": 67,
+    "diseases": 67,
+    "file": "data/notifications_all_time.json"
   }
 ]

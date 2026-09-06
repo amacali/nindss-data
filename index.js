@@ -42,7 +42,7 @@
   const MONTH_FILE = 'data/notifications_by_month.json';
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
   const MONTH_BLOCK = 25;
-  const RUN_LOG = 'data/ref_run_log.json';
+  const RUN_LOG = 'data/log.json';
 
   // Every PowerBI request goes through getCaseNumbers, so counting calls here
   // gives an exact request count per run without touching the client.
