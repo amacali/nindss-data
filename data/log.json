@@ -41,5 +41,41 @@
     "requests": 67,
     "days": 31,
     "file": "data/notifications_by_day.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-09-06T10:31:03.388Z",
+    "seconds": 15.8,
+    "requests": 67,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
+  },
+  {
+    "mode": "reported",
+    "scope": null,
+    "started_at": "2026-09-06T10:31:19.492Z",
+    "seconds": 20.4,
+    "requests": 67,
+    "days": 60,
+    "file": "data/notifications_by_day.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-09-06T10:34:40.232Z",
+    "seconds": 10.5,
+    "requests": 67,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
+  },
+  {
+    "mode": "reported",
+    "scope": null,
+    "started_at": "2026-09-06T10:34:51.107Z",
+    "seconds": 12.8,
+    "requests": 67,
+    "days": 60,
+    "file": "data/notifications_by_day.json"
   }
 ]
