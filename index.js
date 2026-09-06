@@ -2,7 +2,7 @@
   NINDSS notification scraper — pulls notifiable-disease notification counts
   for Australia from the NINDSS PowerBI dashboard. Three modes:
     node index.js / all-time        → data/all-time/<reportDate>_notifications.json (daily, default)
-    node index.js year [Y|all]      → data/year/<year>_notifications.json (on request)
+    node index.js year [Y|all]      → data/year/notifications.json (on request)
     node index.js month [YM|Y|all]  → data/month/<year>_notifications.json (on request)
     node index.js day [YMD|YM]      → data/day/<YYYYMMDD>_notifications.json (rolling 30d)
 
@@ -97,33 +97,40 @@ function parseDayScope(scopeArg, reportDate) {
 // Writes one file per DAX_Year in `yearsToFetch` under
 // data/year/<year>_notifications.json — that year's own per-state counts
 // across every disease. Every requested year is fetched live and overwritten
-// (no reuse-if-exists). `yearsToFetch`: [currentYear] default, [aYear]
-// targeted backfill, or YEAR_FLOOR..currentYear for 'all'. Cost is the same
-// either way — one query per disease returns every year at once.
+// `yearsToFetch` no longer picks what is WRITTEN — the file is always written
+// whole, YEAR_FLOOR..currentYear, for the same reason buildMonthOutput rebuilds
+// a whole year: a scoped run would otherwise drop every year it did not target.
+// This costs nothing, because one query per disease already returns every year.
 async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed) {
   fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
 
   // One query per disease returns EVERY year at once, so the whole history
   // costs ~67 requests rather than one per disease-year. Counts are that
   // year's own total, not a running total.
-  const wanted = new Set(yearsToFetch);
+  const allYears = [];
+  const maxYear = Math.max(...yearsToFetch);
+  for (let year = YEAR_FLOOR; year <= maxYear; year++) allYears.push(year);
+
   const byYear = {};   // year -> rows[]
-  for (const year of wanted) byYear[year] = [];
+  for (const year of allYears) byYear[year] = [];
 
   for (const diseaseName of diseases) {
     const perYear = await getCaseNumbers(capacityUri, token, diseaseName, 'year');
     if (!perYear) throw new Error('Year query failed for ' + diseaseName);
-    for (const year of wanted) {
+    for (const year of allYears) {
       const counts = perYear[year];
       byYear[year].push([diseaseName, ...STATE_CODES.map(s => (counts?.[s]) ?? 0)]);
     }
   }
 
-  for (const year of yearsToFetch) {
-    const yearFile = { last_refreshed: lastRefreshed, year, columns: ['disease', ...STATE_CODES], rows: byYear[year] };
-    fs.writeFileSync(YEAR_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
-  }
-  console.log('Wrote ' + yearsToFetch.length + ' year file(s)');
+  // One file holding every year, as an ARRAY of year objects — each element
+  // keeps the full shape it had as its own file. Mirrors data/month/.
+  const yearFile = allYears.map(year => ({
+    last_refreshed: lastRefreshed, year,
+    columns: ['disease', ...STATE_CODES], rows: byYear[year]
+  }));
+  fs.writeFileSync(YEAR_CACHE_DIR + '/notifications.json', JSON.stringify(yearFile));
+  console.log('Wrote ' + allYears.length + ' years to ' + YEAR_CACHE_DIR + '/notifications.json');
 }
 
 // Turns the CLI's optional third arg into { year, month } periods. Only the
