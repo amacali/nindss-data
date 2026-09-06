@@ -27,7 +27,7 @@ on:
 
 jobs:
   archive:
-    timeout-minutes: 30
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
@@ -60,10 +60,13 @@ jobs:
           echo "stale=false" >> "$GITHUB_OUTPUT"
         fi
     - name: Run script
-      # Scheduled runs pass no input → run all-time, day, year, and month (each
-      # with no scope arg, so year/month only ever refresh the current period
-      # and day only its rolling 30-day window, never a full backfill).
-      # Manual dispatch runs only the selected mode.
+      # Scheduled runs pass no input → run all four modes, ~80s and 333
+      # requests in total. Manual dispatch runs only the selected mode.
+      #
+      # ORDER MATTERS: 'year' writes data/ref_disease_year_map.json, and
+      # 'month' reads it to skip the 25-year blocks a disease has no cases in.
+      # Run 'month' first and it uses the PREVIOUS run's map — which writes
+      # zeros, without querying, for a disease-year the map does not list.
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -71,10 +74,10 @@ jobs:
         else
           node index.js all-time
           node index.js day
-          node index.js year
-          node index.js month
+          node index.js year     # writes ref_disease_year_map.json
+          node index.js month    # reads it — must follow 'year'
         fi
-      timeout-minutes: 25
+      timeout-minutes: 15
     - name: Push data
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |

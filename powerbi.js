@@ -186,10 +186,12 @@
 // dimensions (G1 for 'year', G2 for 'month') — projecting an extra hierarchy
 // level shifts every later dimension's G-number.
 
-// `onlyYear` (optional) restricts the query to a single DAX_Year. 'month' mode
-// needs it: PowerBI truncates a result set at 500 year-month cells, so a
-// full-history month query silently loses everything past ~41 years. Scoped to
-// one year it returns 12 cells and cannot truncate.
+// `onlyYear` (optional) restricts the query by DAX_Year: a NUMBER for one year,
+// or [from, to] for a block. 'month' mode needs it — PowerBI truncates a result
+// set at 500 rows whenever a SECONDARY axis is present, and Window.Count does
+// NOT raise that (500, 1000, 5000 and 20000 all return exactly 500), so a
+// full-history month query silently loses everything past ~41 years. A 25-year
+// block returns at most 300 cells and cannot truncate.
 
 // `dayRange` (optional) is { from, to } as 'YYYY-MM-DD', half-open: from <= d < to.
 // 'day' mode needs it. The filter constrains DIAGNOSIS_DATE on the FACT table
@@ -220,17 +222,23 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
 
   // Period selects (between STATE and the measure), primary projections, binding,
   // and order-by, per mode.
+  const SEL_DATE = "{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.DIAGNOSIS_DATE\"}";
   const periodSelect = mode === 'month' ? SEL_YEAR + "," + SEL_MONTH + ","
                      : mode === 'year'  ? SEL_YEAR + ","
-                     : "";                    // 'all-time' and 'day': no period dimension
+                     : mode === 'day'   ? SEL_DATE + ","
+                     : "";                    // 'all-time': no period dimension
   const primaryProjections = mode === 'month' ? "[1,2,3]"
+                           : mode === 'day'   ? "[1,2]"   // [date, measure]
                            : mode === 'year'  ? "[1,2]"
-                           : "[0,1]";              // all-time/day: [STATE, measure]
-  const flatMode = mode === 'all-time' || mode === 'day';   // STATE on the PRIMARY axis
+                           : "[0,1]";              // all-time: [STATE, measure]
+  const flatMode = mode === 'all-time';   // STATE on the PRIMARY axis
   const binding = flatMode
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
     : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":5000}},\"Secondary\":{\"Top\":{\"Count\":100}}},\"Version\":1}";
-  const orderBy = flatMode ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
+  const ORDER_DATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}}},";
+  const orderBy = flatMode        ? ORDER_STATE
+                : mode === 'day'  ? ORDER_DATE + ORDER_STATE
+                : ORDER_YEAR + ORDER_STATE;
 
   // Half-open DIAGNOSIS_DATE range for 'day'. ComparisonKind: 0 '=', 1 '>',
   // 2 '>=', 3 '<', 4 '<=' — verified against DAX_Year, where the totals for
@@ -241,8 +249,14 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
     + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
     : "";
 
-    const yearFilter = onlyYear
-    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":0,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + onlyYear + "L\"}}}}}"
+  // `onlyYear` is either one year (equality) or [from, to] for a BLOCK of
+  // years (>= and <=). A block lets 'month' mode cover 25 years in one query
+  // instead of one per disease-year: 300 cells against the 500 cap.
+  const yearBound = (kind, year) =>
+    ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":" + kind + ",\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + year + "L\"}}}}}";
+    const yearFilter = Array.isArray(onlyYear)
+    ? yearBound(2, onlyYear[0]) + yearBound(4, onlyYear[1])
+    : onlyYear ? yearBound(0, onlyYear)
     : "";
 const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}" + yearFilter + dayFilter + "],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
 
@@ -285,7 +299,6 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
     console.log('Fetching ' + diseaseName + ' (' + mode + ')');
 
     if (flatMode) {
-      // 'all-time' and 'day' share this layout.
       // STATE is on the PRIMARY axis: each row is one state, projected as
       // [state, measure] with row.R flagging which of the two repeat (the
       // measure repeats for runs of equal counts — e.g. long stretches of 0).
@@ -302,8 +315,9 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
       return cases;
     }
 
-    // 'year'/'month': STATE is on the secondary axis (the per-row X array); its
-    // labels live in SH[0].DM1 under G1 ('year') or G2 ('month').
+    // 'year'/'month'/'day': STATE is on the secondary axis (the per-row X
+    // array); its labels live in SH[0].DM1 under G1 ('year'/'day') or G2
+    // ('month' — projecting Month bumps every later dimension's G-number).
     const stateKey = mode === 'month' ? 'G2' : 'G1';
     const states = ds0.SH[0].DM1.map(v => v[stateKey]);
     const years = {};
@@ -348,10 +362,13 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
         years[year][month] = cases;
       });
     } else {
-      // 'year': single primary dimension (year) — no dictionary/bitmask; the year
-      // is stored directly on the row as G0. Only measure sparsity applies.
+      // 'year'/'day': a single primary dimension — no dictionary/bitmask; the
+      // period is stored directly on the row as G0. Only measure sparsity
+      // applies. 'day' carries an epoch in ms, keyed out as 'YYYY-MM-DD'.
       results.forEach(row => {
-        const year = row.G0;
+        const year = mode === 'day'
+          ? new Date(row.G0).toISOString().slice(0, 10)
+          : row.G0;
         const cases = {};
 
         var i = 0;
