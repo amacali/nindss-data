@@ -1,7 +1,7 @@
 # National Notifiable Disease Surveillance System data for Australia #
 Notification-count snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
-All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded.
+All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded. A `data/month/` file wraps 12 of those objects in an array, one per month.
 
 Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
 
@@ -33,19 +33,31 @@ Generated on demand (`node index.js year`, `node index.js year 2019`, or `node i
 }
 ```
 
-### 📅 data/month/\<YYYYMM>_notifications.json (on request — monthly history) ##
-Generated on demand (`node index.js month`, `node index.js month 201907`, `node index.js month 2019`, or `node index.js month all` for a full history rebuild). One file per (year, month), one row per disease. Counts are **that month's own total**. The 12 months of a year sum to that year's file:
+### 📅 data/month/\<year>_notifications.json (on request — monthly history) ##
+Generated on demand (`node index.js month`, `node index.js month 2019`, or `node index.js month all` for a full history rebuild). One file per year, holding an **array of that year's months**. Each element carries its own full header, so a consumer can lift one month out whole. Counts are **that month's own total**, and the 12 months of a year sum to that year's file:
 ```json
-{
-  "last_refreshed": "2026-09-05T15:31:23+10:00",
-  "year": 2024,
-  "month": 3,
-  "columns": ["disease", "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"],
-  "rows": [
-    ["COVID-19", 241, 6725, 166, 4438, 4893, 2118, 2678, 945]
-  ]
-}
+[
+  {
+    "last_refreshed": "2026-09-05T15:31:23+10:00",
+    "year": 2024,
+    "month": 1,
+    "columns": ["disease", "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"],
+    "rows": [
+      ["COVID-19", 545, 16213, 309, 8538, 6992, 3171, 5349, 1703]
+    ]
+  },
+  {
+    "last_refreshed": "2026-09-05T15:31:23+10:00",
+    "year": 2024,
+    "month": 2,
+    "columns": ["disease", "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"],
+    "rows": [
+      ["COVID-19", 361, 9892, 261, 6681, 6088, 2814, 3216, 1052]
+    ]
+  }
+]
 ```
+A year that is still running holds only the months so far — 2026 has 9. A targeted run rewrites the whole year file, never a single month.
 
 ### 📅 data/legacy/YYYYMMDD_cases.json (daily — deprecated) ##
 Written alongside the daily all-time file for backwards compatibility with an old consumer; slated for removal, format frozen. A flat array of per disease/year/state records, not the `columns`/`rows` shape used elsewhere:
@@ -58,18 +70,30 @@ Written alongside the daily all-time file for backwards compatibility with an ol
 | Field | Description |
 | --- | --- |
 | `report_date` | Reporting date AEDT, also used as the filename prefix (all-time file only) |
-| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/day/`, `data/year/` and `data/month/` file, and the first key in the year and month files. Use it to tell when a period file was last regenerated |
-| `year` / `month` | Present only in `data/year/`/`data/month/` files — the period the counts in `rows` cover |
+| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/day/` and `data/year/` file, and in every month element of a `data/month/` file. Use it to tell when a period was last regenerated |
+| `year` / `month` | The period the counts in `rows` cover. `year` in `data/year/`; both in each element of a `data/month/` file |
 | `columns` | Column order for every entry in `rows` |
 | `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts for the file's own period |
 
-Load a file into MySQL in a single pass:
+Load a `data/day/` or `data/year/` file into MySQL in a single pass:
 ```sql
 SELECT t.* FROM notifications,
 JSON_TABLE(doc, '$.rows[*]' COLUMNS (
   disease VARCHAR(120) PATH '$[0]',
   act INT PATH '$[1]',  nsw INT PATH '$[2]',  nt  INT PATH '$[3]', qld INT PATH '$[4]',
   sa  INT PATH '$[5]',  tas INT PATH '$[6]',  vic INT PATH '$[7]', wa  INT PATH '$[8]'
+)) AS t;
+```
+A `data/month/` file is an array of months, so it needs one more level. The month comes off the element, and `NESTED PATH` unpacks that month's rows:
+```sql
+SELECT t.* FROM notifications,
+JSON_TABLE(doc, '$[*]' COLUMNS (
+  month INT PATH '$.month',
+  NESTED PATH '$.rows[*]' COLUMNS (
+    disease VARCHAR(120) PATH '$[0]',
+    act INT PATH '$[1]',  nsw INT PATH '$[2]',  nt  INT PATH '$[3]', qld INT PATH '$[4]',
+    sa  INT PATH '$[5]',  tas INT PATH '$[6]',  vic INT PATH '$[7]', wa  INT PATH '$[8]'
+  )
 )) AS t;
 ```
 
@@ -89,3 +113,5 @@ JSON_TABLE(doc, '$.rows[*]' COLUMNS (
   The year floor moved from a hardcoded 1990 to the earliest year in the data, which is 1938. That recovered real pre-1990 cases the old floor dropped, such as Chlamydial infection back to 1938 and Gonococcal to 1973, and it is why `all-time` and the year files now agree exactly.
 
   All 3 granularities reconcile for every disease and every state: 47,704 compared cells, no mismatch, and a shared total of 21,688,823.
+
+- **6 Sep 2026 — one month file per year** `data/month/` now holds one file per year (`<year>_notifications.json`), containing an array of that year's months, instead of 1,065 files named `<YYYYMM>_notifications.json`. Each array element keeps the exact shape the per-month file had, headers included, so the counts are untouched — only the packaging changed. A consumer that opened a `YYYYMM` path must now open the year and pick the month, and a MySQL load needs a `NESTED PATH` (see above).

@@ -3,15 +3,16 @@
   for Australia from the NINDSS PowerBI dashboard. Three modes:
     node index.js / all-time        → data/day/<reportDate>_notifications.json (daily, default)
     node index.js year [Y|all]      → data/year/<year>_notifications.json (on request)
-    node index.js month [YM|Y|all]  → data/month/<YYYYMM>_notifications.json (on request)
+    node index.js month [YM|Y|all]  → data/month/<year>_notifications.json (on request)
 
-  'year'/'month' each write one file per period holding that period's OWN
-  per-state count, not a running total. Counts are unmasked: every query
-  selects Count_Notification, which returns the real value where the
-  dashboard's <5 mask would report 0. Scope defaults to the current period;
-  an optional third CLI arg backfills a specific past period or 'all'
-  rebuilds full history — see parseMonthScope. Targeted periods are always
-  fetched live, never reused from cache.
+  Both write one file per YEAR, holding each period's OWN count rather than a
+  running total. A 'year' file is one object with a row per disease; a 'month'
+  file is an ARRAY of that year's months, each element keeping the same
+  { last_refreshed, year, month, columns, rows } shape. Counts are unmasked:
+  every query selects Count_Notification, which returns the real value where
+  the dashboard's <5 mask would report 0. Scope defaults to the current year;
+  an optional third CLI arg targets a past year, or 'all' rebuilds the full
+  history. A targeted year is always fetched live and rewritten whole.
 
   On 'all-time' runs this also writes the deprecated data/legacy/<reportDate>_cases.json
   — see legacy.js, slated for removal, output format frozen.
@@ -70,9 +71,10 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastR
   console.log('Wrote ' + yearsToFetch.length + ' year file(s)');
 }
 
-// Turns the CLI's optional third arg into { year, month } periods to fetch:
-// no arg → [current period]; 'YYYYMM' → that period; 'YYYY' → every month of
-// that year; 'all' → every month from YEAR_FLOOR to now.
+// Turns the CLI's optional third arg into { year, month } periods. Only the
+// YEAR of each period matters now — buildMonthOutput rebuilds a whole year at
+// a time — so 'YYYYMM' and 'YYYY' both mean "rewrite that year's file", and
+// the month half only serves parseMonthScope's own bounds checking.
 function parseMonthScope(scopeArg, currentYear, currentMonth) {
   if (!scopeArg) return [{ year: currentYear, month: currentMonth }];
   if (scopeArg === 'all') {
@@ -96,11 +98,13 @@ function parseMonthScope(scopeArg, currentYear, currentMonth) {
   throw new Error("invalid month scope '" + scopeArg + "' — expected YYYYMM, YYYY, or 'all'");
 }
 
-// Writes one file per (year, month) in `periodsToFetch` under
-// data/month/<YYYYMM>_notifications.json — that month's own per-state counts.
-// Every period is queried live. A full 'all' rebuild costs ~1.7k requests and
-// about 5 minutes, because the disease year map skips the empty pairs below.
-async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed) {
+// Writes one file per YEAR under data/month/<year>_notifications.json. The
+// file is an ARRAY of the 12 month objects, each holding that month's own
+// per-state counts in the same full shape it had as its own file.
+// `periodsToFetch` only picks WHICH years are written; each of those is always
+// rebuilt whole (see below). A full 'all' rebuild costs ~1.7k requests and
+// about 5 minutes, because the disease year map skips the empty pairs.
+async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed, reportYear, reportMonth) {
   fs.mkdirSync(MONTH_CACHE_DIR, { recursive: true });
 
   // Queried per DISEASE-YEAR: PowerBI truncates a result set at 500 year-month
@@ -121,13 +125,22 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, la
   const zero = STATE_CODES.map(() => 0);
   for (const yearStr of Object.keys(periodsByYear).sort()) {
     const year = Number(yearStr);
-    const months = periodsByYear[year];
 
-    const periodFiles = {};
-    for (const month of months) {
-      const period = String(year) + String(month).padStart(2, '0');
-      periodFiles[period] = { last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: [] };
-    }
+    // A year file must always be written WHOLE, so the months come from the
+    // year rather than from the scope. Narrowing it to the requested months
+    // would drop the other 11 from the file — and the CI cron requests one
+    // month, so that would truncate the current year on every run. Costs
+    // nothing: one query already returns all 12 months of a disease-year.
+    const lastMonth = year === Number(reportYear) ? Number(reportMonth) : 12;
+    const months = Array.from({ length: lastMonth }, (_, i) => i + 1);
+    const byMonth = {};
+    for (const month of months) byMonth[month] = [];
+
+    // One file per YEAR, and the file IS an array of the 12 month objects.
+    // Each keeps the full header it had as its own file — last_refreshed,
+    // year, month, columns, rows — so `month` sits beside `year` rather than
+    // above it, and a consumer can lift one element out unchanged.
+    const yearFile = [];
 
     let queried = 0;
     for (const diseaseName of diseases) {
@@ -146,15 +159,18 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, la
 
       for (const month of months) {
         const c = counts?.[year]?.[MONTH_NAMES[month - 1]];
-        const period = String(year) + String(month).padStart(2, '0');
-        periodFiles[period].rows.push([diseaseName, ...(c ? STATE_CODES.map(s => c[s] ?? 0) : zero)]);
+        byMonth[month].push([diseaseName, ...(c ? STATE_CODES.map(s => c[s] ?? 0) : zero)]);
       }
     }
 
-    for (const [period, periodFile] of Object.entries(periodFiles)) {
-      fs.writeFileSync(MONTH_CACHE_DIR + '/' + period + '_notifications.json', JSON.stringify(periodFile));
+    // The rows arrive grouped by disease, so collect per month first and add
+    // the months in order.
+    for (const month of months) {
+      yearFile.push({ last_refreshed: lastRefreshed, year, month, columns: ['disease', ...STATE_CODES], rows: byMonth[month] });
     }
-    console.log('Wrote ' + months.length + ' file(s) for ' + year + ' (' + queried + ' queried, ' + (diseases.length - queried) + ' skipped)');
+
+    fs.writeFileSync(MONTH_CACHE_DIR + '/' + year + '_notifications.json', JSON.stringify(yearFile));
+    console.log('Wrote ' + year + ': ' + months.length + ' month(s), ' + (months.length * diseases.length) + ' rows (' + queried + ' queried, ' + (diseases.length - queried) + ' skipped)');
   }
 }
 
@@ -231,7 +247,7 @@ async function getDiseaseList(mode, scopeArg) {
       const currentYear = Number(reportDate.slice(0, 4));
       const currentMonth = Number(reportDate.slice(4, 6));
       const periodsToFetch = parseMonthScope(scopeArg, currentYear, currentMonth);
-      await buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed);
+      await buildMonthOutput(capacityUri, token, diseases, periodsToFetch, lastRefreshed, currentYear, currentMonth);
       return;
     }
 
