@@ -190,11 +190,23 @@
 // needs it: PowerBI truncates a result set at 500 year-month cells, so a
 // full-history month query silently loses everything past ~41 years. Scoped to
 // one year it returns 12 cells and cannot truncate.
-export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear) {
+
+// `dayRange` (optional) is { from, to } as 'YYYY-MM-DD', half-open: from <= d < to.
+// 'day' mode needs it. The filter constrains DIAGNOSIS_DATE on the FACT table
+// rather than the grouping, so a day, a month and a year on the same column
+// always reconcile exactly — verified to 0 difference across all 67 diseases
+// for September 2026, and for year 2025 against its 12 months.
+//
+// DIAGNOSIS_DATE, not NOTIFICATION_DATE: the dashboard's own filter reads
+// "Diagnosis Year, Diagnosis Quarter, Diagnosis Month Name", and a diagnosis
+// year query matches data/year/2025_notifications.json to the case (1,171,052).
+// The two columns disagree by 27% over 2025, so mixing them breaks the archive.
+export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear,dayRange) {
 
   // The three queries differ only in which period dimensions are projected and
   // how STATE is bound. Assemble the varying pieces per mode:
   //   'all-time' → Select [STATE, Measure];        Primary [0,1], no Secondary
+  //   'day'      → as 'all-time', plus a DIAGNOSIS_DATE range filter
   //   'year'     → Select [STATE, Year, Measure];  Primary [1,2], Secondary [STATE]
   //   'month'    → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
   const SEL_YEAR = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"}";
@@ -210,19 +222,29 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
   // and order-by, per mode.
   const periodSelect = mode === 'month' ? SEL_YEAR + "," + SEL_MONTH + ","
                      : mode === 'year'  ? SEL_YEAR + ","
-                     : "";
+                     : "";                    // 'all-time' and 'day': no period dimension
   const primaryProjections = mode === 'month' ? "[1,2,3]"
                            : mode === 'year'  ? "[1,2]"
-                           : "[0,1]";              // all-time: [STATE, measure]
-  const binding = mode === 'all-time'
+                           : "[0,1]";              // all-time/day: [STATE, measure]
+  const flatMode = mode === 'all-time' || mode === 'day';   // STATE on the PRIMARY axis
+  const binding = flatMode
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
     : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":5000}},\"Secondary\":{\"Top\":{\"Count\":100}}},\"Version\":1}";
-  const orderBy = mode === 'all-time' ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
+  const orderBy = flatMode ? ORDER_STATE : ORDER_YEAR + ORDER_STATE;
+
+  // Half-open DIAGNOSIS_DATE range for 'day'. ComparisonKind: 0 '=', 1 '>',
+  // 2 '>=', 3 '<', 4 '<=' — verified against DAX_Year, where the totals for
+  // kinds 2 and 4 must equal the sum of their parts. Using 1 as an upper bound
+  // (the intuitive but wrong reading) returns plausible garbage, not an error.
+  const dayFilter = dayRange
+    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":2,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.from + "T00:00:00'\"}}}}}"
+    + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
+    : "";
 
     const yearFilter = onlyYear
     ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":0,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DAX_Year\"}},\"Right\":{\"Literal\":{\"Value\":\"" + onlyYear + "L\"}}}}}"
     : "";
-const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}" + yearFilter + "],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
+const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"SemanticQueryDataShapeCommand\":{\"Query\":{\"Version\":2,\"From\":[{\"Name\":\"d1\",\"Entity\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT\",\"Type\":0},{\"Name\":\"d\",\"Entity\":\"DELTALOAD_DATAMART LOCATION_DIM\",\"Type\":0},{\"Name\":\"d11\",\"Entity\":\"DELTALOAD_DATAMART DISEASE_DIM\",\"Type\":0},{\"Name\":\"d3\",\"Entity\":\"DELTALOAD_DATAMART CASE_DIM\",\"Type\":0}],\"Select\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"},\"Name\":\"DELTALOAD_DATAMART LOCATION_DIM.STATE\"}," + periodSelect + SEL_MEASURE + "],\"Where\":[{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d\"}},\"Property\":\"STATE\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'AUS'\"}}],[{\"Literal\":{\"Value\":\"'Unknown'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'" + diseaseName + "'\"}}]]}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE GROUP\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Unknown'\"}}],[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"Age Group\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"null\"}}]]}}}}},{\"Condition\":{\"Not\":{\"Expression\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d11\"}},\"Property\":\"DISEASE NAME\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Hepatitis C (<24 months)'\"}}]]}}}}},{\"Condition\":{\"In\":{\"Expressions\":[{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d3\"}},\"Property\":\"CONFIRMATION_STATUS\"}}],\"Values\":[[{\"Literal\":{\"Value\":\"'Confirmed'\"}}],[{\"Literal\":{\"Value\":\"'Probable'\"}}]]}}}" + yearFilter + dayFilter + "],\"OrderBy\":[" + orderBy + "]},\"Binding\":" + binding + ",\"ExecutionMetricsKind\":1}}]},\"QueryId\":\"\",\"ApplicationContext\":{\"DatasetId\":\"3471d96b-c14c-403f-b3a6-016f1deac28e\",\"Sources\":[{\"ReportId\":\"bc027587-5e9e-4920-bf03-a45fd3079f25\",\"VisualId\":\"35d7386fac9435457a0a\"}]}}],\"cancelQueries\":[],\"modelId\":3305775,\"userPreferredLocale\":\"en-GB\",\"allowLongRunningQueries\":true}";
 
   try {
     // Fetch data from URL and store the response into a const
@@ -262,7 +284,8 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
 
     console.log('Fetching ' + diseaseName + ' (' + mode + ')');
 
-    if (mode === 'all-time') {
+    if (flatMode) {
+      // 'all-time' and 'day' share this layout.
       // STATE is on the PRIMARY axis: each row is one state, projected as
       // [state, measure] with row.R flagging which of the two repeat (the
       // measure repeats for runs of equal counts — e.g. long stretches of 0).

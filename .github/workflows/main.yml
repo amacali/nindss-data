@@ -5,25 +5,29 @@ on:
   #     - main
   schedule:
     # Times are UTC (GitHub cron has no DST). Anchored to AEDT (UTC+11):
-    # 08:00 and 16:00 AEDT. During AEST (winter) both shift ~1h earlier.
-    # The 16:00 run is a self-healing backup — if the morning run already
-    # committed today's data it regenerates an identical file and no-ops.
-    - cron: '30 21 * * *'   # 08:00 AEDT (previous UTC day)
-    - cron: '30 5 * * *'    # 16:00 AEDT
+    # 08:00, 12:00, 16:00 and 20:00 AEDT. During AEST (winter) all shift ~1h
+    # earlier. The dashboard refreshes about once a day, so most of these
+    # windows find nothing new — the refresh guard below skips those in ~2
+    # requests rather than re-running a ~2,000-request scrape.
+    - cron: '0 21 * * *'    # 08:00 AEDT (previous UTC day)
+    - cron: '0 1 * * *'     # 12:00 AEDT
+    - cron: '0 5 * * *'     # 16:00 AEDT
+    - cron: '0 9 * * *'     # 20:00 AEDT
   workflow_dispatch:
     inputs:
       mode:
-        description: 'all-time = all-time totals (daily); year = per-year; month = monthly history'
+        description: 'all-time = totals to date; day = rolling 30 days; year = per-year; month = monthly history'
         type: choice
         options:
           - all-time
+          - day
           - year
           - month
         default: all-time
 
 jobs:
   archive:
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
@@ -43,20 +47,36 @@ jobs:
       # warnings (whatwg-encoding, node-domexception — pulled in under cheerio);
       # real errors still surface.
       run: npm install --loglevel=error
+    # Scheduled runs only: skip the scrape when the dashboard has not refreshed
+    # since the last run. Exit 1 means the local data is already current.
+    # Manual dispatch always runs, so a re-scrape can be forced.
+    - name: Check for a refresh
+      id: refresh
+      if: github.event_name != 'workflow_dispatch'
+      run: |
+        if node refresh-check.js --stale; then
+          echo "stale=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "stale=false" >> "$GITHUB_OUTPUT"
+        fi
     - name: Run script
-      # Scheduled runs pass no input → run all-time, year, and month (each with
-      # no scope arg, so year/month only ever refresh the current period, never
-      # a full backfill). Manual dispatch runs only the selected mode.
+      # Scheduled runs pass no input → run all-time, day, year, and month (each
+      # with no scope arg, so year/month only ever refresh the current period
+      # and day only its rolling 30-day window, never a full backfill).
+      # Manual dispatch runs only the selected mode.
+      if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
           node index.js ${{ github.event.inputs.mode || 'all-time' }}
         else
           node index.js all-time
+          node index.js day
           node index.js year
           node index.js month
         fi
-      timeout-minutes: 18
+      timeout-minutes: 25
     - name: Push data
+      if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
         git config user.name amacali
         git config user.email anthony@macali.com.au
