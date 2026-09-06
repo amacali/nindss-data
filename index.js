@@ -2,7 +2,7 @@
   NINDSS notification scraper — pulls notifiable-disease notification counts
   for Australia from the NINDSS PowerBI dashboard. Three modes:
     node index.js / all-time        → data/all-time/<reportDate>_notifications.json (daily, default)
-    node index.js year [Y|all]      → data/year/notifications.json (on request)
+    node index.js year [Y|all]      → data/notifications_by_year.json (on request)
     node index.js month [YM|Y|all]  → data/month/<year>_notifications.json (on request)
     node index.js day [YMD|YM]      → data/day/<YYYYMMDD>_notifications.json (rolling 30d)
 
@@ -24,11 +24,11 @@
   import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers } from './powerbi.js';
 
   // Earliest year any disease has data for, read from the disease year map
-  // (data/reference/disease_years.json) rather than hardcoded. The queries
+  // (data/ref_disease_years.json) rather than hardcoded. The queries
   // carry NO year floor of their own — an earlier hardcoded 1990 silently
   // dropped real pre-1990 cases (Chlamydial infection goes back to 1938,
   // Gonococcal to 1973), which made 'all-time' and the year files disagree.
-  const DISEASE_YEARS_PATH = 'data/reference/disease_years.json';
+  const DISEASE_YEARS_PATH = 'data/ref_disease_years.json';
   const YEAR_FLOOR = fs.existsSync(DISEASE_YEARS_PATH)
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
     : 1938;
@@ -38,7 +38,7 @@
   // the newest days are always incomplete and keep rising for weeks; rebuilding
   // the whole window each run lets every file self-correct.
   const DAY_WINDOW = 30;
-  const YEAR_CACHE_DIR = 'data/year';
+  const YEAR_FILE = 'data/notifications_by_year.json';
   const MONTH_CACHE_DIR = 'data/month';
 
 // Writes one file per DAY under data/day/<YYYYMMDD>_notifications.json,
@@ -102,8 +102,6 @@ function parseDayScope(scopeArg, reportDate) {
 // a whole year: a scoped run would otherwise drop every year it did not target.
 // This costs nothing, because one query per disease already returns every year.
 async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed) {
-  fs.mkdirSync(YEAR_CACHE_DIR, { recursive: true });
-
   // One query per disease returns EVERY year at once, so the whole history
   // costs ~67 requests rather than one per disease-year. Counts are that
   // year's own total, not a running total.
@@ -129,8 +127,8 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastR
     last_refreshed: lastRefreshed, year,
     columns: ['disease', ...STATE_CODES], rows: byYear[year]
   }));
-  fs.writeFileSync(YEAR_CACHE_DIR + '/notifications.json', JSON.stringify(yearFile));
-  console.log('Wrote ' + allYears.length + ' years to ' + YEAR_CACHE_DIR + '/notifications.json');
+  fs.writeFileSync(YEAR_FILE, JSON.stringify(yearFile));
+  console.log('Wrote ' + allYears.length + ' years to ' + YEAR_FILE);
 }
 
 // Turns the CLI's optional third arg into { year, month } periods. Only the
@@ -285,8 +283,7 @@ async function getDiseaseList(mode, scopeArg) {
       diseases.push(current[0]);
       diseaseGroups[current[0]] = current[1];
     });
-    fs.mkdirSync('data/reference', { recursive: true });
-    fs.writeFileSync('data/reference/disease_groups.json', JSON.stringify(diseaseGroups, null, 2));
+    fs.writeFileSync('data/ref_disease_groups.json', JSON.stringify(diseaseGroups, null, 2));
 
     // 'day' mode — see buildDayOutput. Scope defaults to the rolling
     // DAY_WINDOW ending on reportDate; scopeArg can target one day or a month.

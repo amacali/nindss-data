@@ -17,17 +17,28 @@
   // Newest last_refreshed across the folders a scheduled run writes. A folder
   // with no files reads as null, which forces the scrape.
   function storedRefresh() {
-    const dirs = ['data/all-time', 'data/day', 'data/year', 'data/month'];
+    // Folders hold one file per period; data/notifications_by_year.json is a
+    // single file. Both are checked — the OLDEST timestamp gates the run.
+    const dirs = ['data/all-time', 'data/day', 'data/month'];
+    const files = ['data/notifications_by_year.json'];
     let newest = null;
+    const consider = doc => {
+      // Array documents (a month file, the year file) carry the stamp on each
+      // element; a plain object carries it at the top.
+      const stamp = Array.isArray(doc) ? doc[doc.length - 1]?.last_refreshed : doc.last_refreshed;
+      if (!stamp) return false;
+      if (newest === null || stamp < newest) newest = stamp;
+      return true;
+    };
     for (const dir of dirs) {
       if (!fs.existsSync(dir)) return null;
-      const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
-      if (!files.length) return null;
-      const doc = JSON.parse(fs.readFileSync(dir + '/' + files[files.length - 1], 'utf8'));
-      // data/month/ files are an ARRAY of months; the rest are plain objects.
-      const stamp = Array.isArray(doc) ? doc[doc.length - 1]?.last_refreshed : doc.last_refreshed;
-      if (!stamp) return null;
-      if (newest === null || stamp < newest) newest = stamp;   // oldest folder gates the run
+      const found = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
+      if (!found.length) return null;
+      if (!consider(JSON.parse(fs.readFileSync(dir + '/' + found[found.length - 1], 'utf8')))) return null;
+    }
+    for (const file of files) {
+      if (!fs.existsSync(file)) return null;
+      if (!consider(JSON.parse(fs.readFileSync(file, 'utf8')))) return null;
     }
     return newest;
   }
