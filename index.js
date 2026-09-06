@@ -4,8 +4,8 @@
     node index.js / all-time        → data/notifications_all_time.json (daily, default)
     node index.js year [Y|all]      → data/notifications_by_year.json (on request)
     node index.js month [YM|Y|all]  → data/notifications_by_month.json (on request)
-    node index.js day [YMD|YM]      → data/notifications_by_day_diagnostic.json (rolling 30d)
-    node index.js reported [YMD|YM] → data/notifications_by_day.json (rolling 30d)
+    node index.js day [YMD|YM]      → data/notifications_by_day_diagnostic.json (rolling 31d)
+    node index.js reported [YMD|YM] → data/notifications_by_day.json (rolling 31d)
 
   Both write one file per YEAR, holding each period's OWN count rather than a
   running total. A 'year' file is one object with a row per disease; a 'month'
@@ -43,7 +43,7 @@
   // Days kept in the rolling window. A date arrives late, so the newest days
   // are always incomplete and keep rising for weeks; rebuilding the whole
   // window each run lets every file self-correct.
-  const DAY_WINDOW = 30;
+  const DAY_WINDOW = 31;
   const YEAR_FILE = 'data/notifications_by_year.json';
   const MONTH_FILE = 'data/notifications_by_month.json';
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
@@ -76,7 +76,7 @@
 // per-state counts, on the date column that `mode` selects.
 //
 // ONE query per disease covers the whole window, not one per disease-day: the
-// query groups on the date column (primary) with STATE secondary, so a 30-day
+// query groups on the date column (primary) with STATE secondary, so a 31-day
 // window is 67 requests and ~9s rather than 2,010 and 5 minutes. The date
 // arrives as G0 on each row, the same single-primary-dimension shape 'year'
 // mode reads its year from.

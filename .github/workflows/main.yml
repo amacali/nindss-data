@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'all-time = totals to date; day = rolling 30 days by diagnosis date; reported = the same by notification date; year = per-year; month = monthly history'
+        description: 'all-time = totals to date; day = rolling 31 days by diagnosis date; reported = the same by notification date; year = per-year; month = monthly history'
         type: choice
         options:
           - all-time
