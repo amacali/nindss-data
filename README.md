@@ -31,7 +31,7 @@ The three `by_*` files are an ARRAY of period objects. Each element keeps the sa
 
 **The newest day entries are incomplete.** A diagnosis reaches the system days after the fact, so recent dates read low and keep rising for weeks. Do not read the tail-off as a real fall in cases.
 
-Alongside sit `ref_disease_groups.json` and `ref_disease_years.json` (reference data the scraper writes for itself), and `log.json` — the last 100 runs with their timing and request counts.
+Alongside sit `ref_disease_groups.json` and `ref_disease_year_map.json` (reference data the scraper writes for itself), and `log.json` — the last 100 runs with their timing and request counts.
 
 | Field | Description |
 | --- | --- |

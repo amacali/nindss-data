@@ -31,7 +31,7 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   2. `getToken()` — exchanges the embed token for a short-lived MWC token and capacity URI via PowerBI's `modelsAndExploration` endpoint.
   3. `getLatestUpdateDate()` — queries the `DataRefreshAEST` table (the same source backing the dashboard's "Last refreshed on" card) and returns both `reportDate` (`YYYYMMDD`, used for the filename/grouping key) and `lastRefreshed` (full AEST/AEDT timestamp, same underlying value with time preserved).
   4. `getCaseNumbers(..., mode)` — queries `NOTIFIABLE_EVENT_FACT` joined with `LOCATION_DIM`/`DISEASE_DIM`/`CASE_DIM` for per-state notification counts for one disease (restricted to Confirmed/Probable cases and excluding the `Hepatitis C (<24 months)` and `Unknown` disease groups). `mode` drives the query granularity AND return shape: `all-time` → `{ <state>: count }`; `year` → `{ <year>: { <state>: count } }`; `month` → `{ <year>: { <month>: { <state>: count } } }`. Each mode is queried at its own granularity, never derived from a finer one. This is the only query path: `all-time` and both `index.js` build functions come through it. An optional 5th arg `onlyYear` restricts a `month` query to one `DAX_Year` — needed because PowerBI truncates a result set at 500 year-month cells, which silently drops everything past ~41 years.
-  5. `data/ref_disease_years.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 132. A missing map is safe — every block then falls back to a live query.
+  5. `data/ref_disease_year_map.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 132. A missing map is safe — every block then falls back to a live query.
 
      The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years. `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973).
 
@@ -49,9 +49,9 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   | `day` (30-day window) | 67 | ~25 |
   | `month` (full history) | 132 | ~28 |
 
-  - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost.
+  - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost. It ALSO rewrites `ref_disease_year_map.json` from the years the query returned, as a free by-product. **`year` must therefore run before `month`**, which reads that map; the CI workflow orders them accordingly. `floor_year` comes from the query data, never from the previous map — reading it back would pin the floor forever and hide any earlier year the source later exposes.
   - `buildDayOutput` — one query per disease covers the WHOLE window, grouping on `DIAGNOSIS_DATE` (primary) with STATE secondary. The date arrives as `G0`, the same single-primary-dimension shape `year` uses. Keep the window under ~365 days: one row per day with cases, against the 500-row cap.
-  - `buildMonthOutput` — one query per disease-BLOCK of `MONTH_BLOCK` (25) years. 25 × 12 = 300 cells, under the cap. `ref_disease_years.json` skips a block a disease has no years in, which is what keeps this at 132 rather than 335.
+  - `buildMonthOutput` — one query per disease-BLOCK of `MONTH_BLOCK` (25) years. 25 × 12 = 300 cells, under the cap. `ref_disease_year_map.json` skips a block a disease has no years in, which is what keeps this at 132 rather than 335.
 
   **The 500-row cap is the constraint behind all of this.** It applies whenever a SECONDARY axis is present, and `Window.Count` does NOT raise it — 500, 1000, 5000 and 20000 all return exactly 500 rows. It is SILENT: three different diseases returned identical spans ending at the same date, which only looked wrong because they were compared. Any query returning exactly 500 rows must be treated as truncated.
 
@@ -75,7 +75,7 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_by_day.json` — 30 elements, keyed `date` (`YYYY-MM-DD`). A rolling window, always rebuilt whole.
 - `data/notifications_by_month.json` — 1,065 elements, keyed `year` + `month`.
 - `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
-- `data/ref_disease_groups.json`, `data/ref_disease_years.json` — see Architecture.
+- `data/ref_disease_groups.json`, `data/ref_disease_year_map.json` — see Architecture.
 - `data/log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
 
 Days sum to months and months to years, verified to 0 difference across 618,544 cells. Every file is rebuilt WHOLE on each run, because a scoped run would otherwise drop every period it did not target.

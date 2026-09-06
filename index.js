@@ -24,11 +24,11 @@
   import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers } from './powerbi.js';
 
   // Earliest year any disease has data for, read from the disease year map
-  // (data/ref_disease_years.json) rather than hardcoded. The queries
+  // (data/ref_disease_year_map.json) rather than hardcoded. The queries
   // carry NO year floor of their own — an earlier hardcoded 1990 silently
   // dropped real pre-1990 cases (Chlamydial infection goes back to 1938,
   // Gonococcal to 1973), which made 'all-time' and the year files disagree.
-  const DISEASE_YEARS_PATH = 'data/ref_disease_years.json';
+  const DISEASE_YEARS_PATH = 'data/ref_disease_year_map.json';
   const YEAR_FLOOR = fs.existsSync(DISEASE_YEARS_PATH)
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
     : 1938;
@@ -132,13 +132,37 @@ function parseDayScope(scopeArg, reportDate) {
   throw new Error("invalid day scope '" + scopeArg + "' — expected YYYYMMDD, YYYYMM, or no arg");
 }
 
-// Writes one file per DAX_Year in `yearsToFetch` under
-// data/year/<year>_notifications.json — that year's own per-state counts
-// across every disease. Every requested year is fetched live and overwritten
-// `yearsToFetch` no longer picks what is WRITTEN — the file is always written
-// whole, YEAR_FLOOR..currentYear, for the same reason buildMonthOutput rebuilds
-// a whole year: a scoped run would otherwise drop every year it did not target.
-// This costs nothing, because one query per disease already returns every year.
+// Rewrites data/ref_disease_year_map.json from the years the year query actually
+// returned. `floor_year` comes from the DATA, never from the previous map —
+// deriving it from the old file would pin the floor forever and hide any
+// earlier year the source later exposes.
+function writeDiseaseYears(populated, lastRefreshed) {
+  const names = Object.keys(populated).sort();
+  const everyYear = names.flatMap(n => populated[n]);
+  if (!everyYear.length) return;          // nothing queried; leave the map alone
+
+  const map = { last_refreshed: lastRefreshed, floor_year: Math.min(...everyYear), diseases: {} };
+  for (const name of names) {
+    const years = populated[name];
+    map.diseases[name] = years.length
+      ? { first_year: years[0], last_year: years[years.length - 1], years }
+      : { first_year: null, last_year: null, years: [] };
+  }
+  fs.writeFileSync(DISEASE_YEARS_PATH, JSON.stringify(map, null, 2));
+  console.log('Wrote ' + names.length + ' diseases to ' + DISEASE_YEARS_PATH);
+}
+
+// Writes data/notifications_by_year.json, an ARRAY of year objects holding each
+// year's OWN per-state counts. The file is always written whole, for the same
+// reason buildMonthOutput is: a scoped run would otherwise drop every year it
+// did not target. This costs nothing — one query per disease returns every year.
+//
+// Also rewrites data/ref_disease_year_map.json, the map buildMonthOutput uses to
+// skip empty 25-year blocks. The year query already returns which years each
+// disease has cases in, so the map is a by-product at no extra request cost.
+// It must be rebuilt here rather than carried by hand: a stale map makes
+// buildMonthOutput write ZEROS for a disease-year without querying it, so a
+// disease gaining its first case in a new year would silently read as zero.
 async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastRefreshed) {
   // One query per disease returns EVERY year at once, so the whole history
   // costs ~67 requests rather than one per disease-year. Counts are that
@@ -150,14 +174,26 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastR
   const byYear = {};   // year -> rows[]
   for (const year of allYears) byYear[year] = [];
 
+  // Populated years per disease, collected as the queries come back.
+  const populated = {};
+
   for (const diseaseName of diseases) {
     const perYear = await countedGetCaseNumbers(capacityUri, token, diseaseName, 'year');
     if (!perYear) throw new Error('Year query failed for ' + diseaseName);
+    // A year is POPULATED when the query returned it with a nonzero total. The
+    // query only returns years the disease appears in, but some of those carry
+    // zeros, and blocking on them would waste a request.
+    populated[diseaseName] = Object.keys(perYear)
+      .filter(y => STATE_CODES.some(st => (perYear[y]?.[st] ?? 0) > 0))
+      .map(Number)
+      .sort((a, b) => a - b);
     for (const year of allYears) {
       const counts = perYear[year];
       byYear[year].push([diseaseName, ...STATE_CODES.map(s => (counts?.[s]) ?? 0)]);
     }
   }
+
+  writeDiseaseYears(populated, lastRefreshed);
 
   // One file holding every year, as an ARRAY of year objects — each element
   // keeps the full shape it had as its own file. Mirrors data/month/.
