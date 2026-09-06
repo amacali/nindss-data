@@ -1,6 +1,6 @@
 /*******************************************************************************
   Refresh guard — prints the dashboard's current last_refreshed, and compares it
-  against what the newest local file already holds.
+  against what the local data files already hold.
 
     node refresh-check.js          → prints the live timestamp
     node refresh-check.js --stale  → exit 0 if a scrape is worth running,
@@ -8,16 +8,16 @@
 
   The scheduled workflow runs 4 times a day but the dashboard refreshes about
   once, so 3 of those runs have nothing to do. The check costs 2 requests
-  against ~2,000 for a full day rebuild.
+  against the ~333 a full rebuild of all four files takes.
 *******************************************************************************/
 
   import fs from 'fs';
   import { getToken, getLatestUpdateDate } from './powerbi.js';
 
-  // Newest last_refreshed across the folders a scheduled run writes. A folder
-  // with no files reads as null, which forces the scrape.
-  // Every mode now writes one flat file in data/. The OLDEST timestamp across
-  // them gates the run: if any is behind the source, there is work to do.
+  // Every mode writes one flat file in data/. The OLDEST timestamp across them
+  // gates the run: if any is behind the source, there is work to do. A missing
+  // file or a missing stamp reads as null, which forces the scrape — the guard
+  // fails OPEN, so a bug in it cannot silently stop the cron.
   const DATA_FILES = [
     'data/notifications_all_time.json',
     'data/notifications_by_day.json',

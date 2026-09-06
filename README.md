@@ -1,7 +1,7 @@
 # National Notifiable Disease Surveillance System data for Australia #
 Notification-count snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
-All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded. A `data/month/` file wraps 12 of those objects in an array, one per month.
+All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded. The three `notifications_by_*` files wrap those objects in an array, one per period.
 
 Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
 
@@ -35,13 +35,13 @@ Alongside sit `ref_disease_groups.json` and `ref_disease_year_map.json` (referen
 
 | Field | Description |
 | --- | --- |
-| `report_date` | Reporting date AEDT, also used as the filename prefix (all-time file only) |
-| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. Present in every `data/all-time/` and `data/year/` file, and in every month element of a `data/month/` file. Use it to tell when a period was last regenerated |
-| `year` / `month` | The period the counts in `rows` cover. `year` in `data/year/`; both in each element of a `data/month/` file |
+| `report_date` | Reporting date AEDT. Only in `notifications_all_time.json` |
+| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. On the object in `notifications_all_time.json`, and on every element of the three `notifications_by_*` files. Use it to tell when a period was last regenerated |
+| `date` / `year` / `month` | The period the counts in `rows` cover: `date` per day element, `year` per year element, both per month element |
 | `columns` | Column order for every entry in `rows` |
 | `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts for the file's own period |
 
-Load a `data/all-time/` or `data/year/` file into MySQL in a single pass:
+Load `notifications_all_time.json` into MySQL in a single pass:
 ```sql
 SELECT t.* FROM notifications,
 JSON_TABLE(doc, '$.rows[*]' COLUMNS (
@@ -50,7 +50,7 @@ JSON_TABLE(doc, '$.rows[*]' COLUMNS (
   sa  INT PATH '$[5]',  tas INT PATH '$[6]',  vic INT PATH '$[7]', wa  INT PATH '$[8]'
 )) AS t;
 ```
-A `data/month/` file is an array of months, so it needs one more level. The month comes off the element, and `NESTED PATH` unpacks that month's rows:
+The `notifications_by_*` files are arrays, so they need one more level. The period comes off the element, and `NESTED PATH` unpacks that element's rows. This example is the month file; for the day file read `$.date`, and for the year file `$.year` alone:
 ```sql
 SELECT t.* FROM notifications,
 JSON_TABLE(doc, '$[*]' COLUMNS (
