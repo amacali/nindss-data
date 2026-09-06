@@ -7,16 +7,17 @@ Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`
 
 Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
-### 📁 Four data files, flat in `data/`
+### 📁 Five data files, flat in `data/`
 
 | File | Holds | Keyed by |
 | --- | --- | --- |
 | `notifications_all_time.json` | cumulative totals to date | — (one object) |
-| `notifications_by_day.json` | 30 days, rolling window | `date` |
+| `notifications_by_day_diagnostic.json` | 30 days, rolling window, by diagnosis date | `date` |
+| `notifications_by_day.json` | 30 days, rolling window, by notification date | `date` |
 | `notifications_by_month.json` | 1,065 months from 1938 | `year` + `month` |
 | `notifications_by_year.json` | 89 years from 1938 | `year` |
 
-The three `by_*` files are an ARRAY of period objects. Each element keeps the same shape, so a consumer can lift one out unchanged:
+The four `by_*` files are an ARRAY of period objects. Each element keeps the same shape, so a consumer can lift one out unchanged:
 
 ```json
 [ { "last_refreshed": "2026-09-05T15:31:23+10:00",
@@ -72,6 +73,7 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **6 Sep 2026** renamed `data/day/` to `data/all-time/`. The folder holds cumulative totals to date, not a single day's count, so the old name contradicted `data/year/` and `data/month/`, which both hold their own period's count. The file shape and name are unchanged. `data/day/` now holds daily counts (see the next entry).
 - **6 Sep 2026** added `data/day/<YYYYMMDD>_notifications.json`, a rolling 30-day window of per-day counts by diagnosis date — the same basis as `data/year/` and `data/month/`, and the dashboard's own default filter. Days sum to months and months to years, verified to 0 difference across all 67 diseases. The newest days are incomplete by nature and keep rising, so each run rebuilds the whole window.
 - **6 Sep 2026** removed the deprecated legacy output: `legacy.js`, its call site, and the 274 files in `data/legacy/`. Any consumer still reading `data/legacy/<reportDate>_cases.json` must move to `data/year/`, which carries the same year-granularity counts in the current schema. The daily run is now about twice as fast, because legacy re-queried every disease a second time.
+- **6 Sep 2026 — two daily bases** `notifications_by_day.json` now holds counts by NOTIFICATION_DATE. The diagnosis-date series moved to `notifications_by_day_diagnostic.json`, unchanged. **A consumer that reads the old path gets a different series under the same name, with no error** — the counts stay plausible, so check which basis you need. The two disagree by about 27% over a year. Only the diagnostic file reconciles with `notifications_by_month.json` and `notifications_by_year.json`, which both group on diagnosis date. A new `node index.js reported` mode builds the notification-date file; `node index.js day` still builds the diagnostic one.
 - **6 Sep 2026 — one file per granularity** `data/` is now flat: `notifications_all_time.json`, `notifications_by_day.json`, `notifications_by_month.json` and `notifications_by_year.json`, replacing the `data/day/`, `data/month/`, `data/year/` and `data/all-time/` folders. Reference files moved to a `ref_` prefix. Every count is unchanged — verified across 618,544 cells. The rebuild also got much cheaper: month went from 1,745 requests to 132 (25-year blocks) and day from 2,010 to 67 (one query per disease), so a full rebuild of all four files is now about 80 seconds.
 - **5 Sep 2026** added `last_refreshed` to every `data/year/` and `data/month/` file, as the first key, so a consumer can tell when a period file was last regenerated. New runs take the value from the dashboard, the same source the daily file uses. Existing files carry the timestamp of the commit that wrote them.
 - **5 Sep 2026 — version 3.0 (unmasked)** switched every query to the `Count_Notification` measure, which returns the counts the dashboard suppresses as `n.p`. Cells that read 0 because the true value was below 5 now carry that value. The daily file recovered 41 cells, and the rebuilt year history recovered 1,684 across 60 diseases. Rabies was added upstream the same day and appears with 1 QLD case.
