@@ -15,17 +15,13 @@
   an optional third CLI arg targets a past year, or 'all' rebuilds the full
   history. A targeted year is always fetched live and rewritten whole.
 
-  On 'all-time' runs this also writes the deprecated data/legacy/<reportDate>_cases.json
-  — see legacy.js, slated for removal, output format frozen.
-
-  PowerBI query/decoding logic lives in powerbi.js, shared with legacy.js.
+  PowerBI query/decoding logic lives in powerbi.js.
   Output schema details: see README.md.
 *******************************************************************************/
 
   import fetch from 'node-fetch';
   import fs from 'fs';
   import { STATE_CODES, MONTH_NAMES, getToken, getLatestUpdateDate, getCaseNumbers } from './powerbi.js';
-  import { writeLegacyCases } from './legacy.js';
 
   // Earliest year any disease has data for, read from the disease year map
   // (data/reference/disease_years.json) rather than hardcoded. The queries
@@ -234,7 +230,7 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, la
 }
 
 // Entry point: fetches the disease list, then dispatches to buildYearOutput,
-// buildMonthOutput, or (for 'all-time') the loop below plus writeLegacyCases.
+// buildMonthOutput, or (for 'all-time') the loop below.
 async function getDiseaseList(mode, scopeArg) {
 
   const { capacityUri, token } = await getToken();
@@ -334,9 +330,6 @@ async function getDiseaseList(mode, scopeArg) {
 
     fs.mkdirSync(ALL_TIME_CACHE_DIR, { recursive: true });
     fs.writeFileSync(ALL_TIME_CACHE_DIR + '/' + reportDate + '_notifications.json', JSON.stringify(output));
-
-    // Deprecated legacy output — daily 'all-time' runs only. See legacy.js.
-    await writeLegacyCases(capacityUri, token, reportDate, diseases);
 
   } catch (error) {
     console.log(error);
