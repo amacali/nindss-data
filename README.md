@@ -76,14 +76,6 @@ most recent dates read low and keep rising for weeks. Do not read the tail-off a
 cases. Each run rebuilds the whole 30-day window, so every file self-corrects as the late
 diagnoses arrive.
 
-### 📅 data/legacy/YYYYMMDD_cases.json (daily — deprecated) ##
-Written alongside the daily all-time file for backwards compatibility with an old consumer; slated for removal, format frozen. A flat array of per disease/year/state records, not the `columns`/`rows` shape used elsewhere:
-```json
-[
-  { "REPORT_DATE": "20240311", "DISEASE": "COVID-19", "YEAR": 2024, "CODE": "ACT", "CASES": 4791 }
-]
-```
-
 | Field | Description |
 | --- | --- |
 | `report_date` | Reporting date AEDT, also used as the filename prefix (all-time file only) |
@@ -122,6 +114,7 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **5 Sep 2026** moved the daily snapshots from the top level of `data/` into `data/day/<reportDate>_notifications.json`, so the 3 granularities each sit in their own folder (`data/day/`, `data/year/`, `data/month/`). The file shape is unchanged, but any consumer that reads the old top-level path needs the new path. `data/legacy/` did not move.
 - **6 Sep 2026** renamed `data/day/` to `data/all-time/`. The folder holds cumulative totals to date, not a single day's count, so the old name contradicted `data/year/` and `data/month/`, which both hold their own period's count. The file shape and name are unchanged. `data/day/` now holds daily counts (see the next entry).
 - **6 Sep 2026** added `data/day/<YYYYMMDD>_notifications.json`, a rolling 30-day window of per-day counts by diagnosis date — the same basis as `data/year/` and `data/month/`, and the dashboard's own default filter. Days sum to months and months to years, verified to 0 difference across all 67 diseases. The newest days are incomplete by nature and keep rising, so each run rebuilds the whole window.
+- **6 Sep 2026** removed the deprecated legacy output: `legacy.js`, its call site, and the 274 files in `data/legacy/`. Any consumer still reading `data/legacy/<reportDate>_cases.json` must move to `data/year/`, which carries the same year-granularity counts in the current schema. The daily run is now about twice as fast, because legacy re-queried every disease a second time.
 - **5 Sep 2026** added `last_refreshed` to every `data/year/` and `data/month/` file, as the first key, so a consumer can tell when a period file was last regenerated. New runs take the value from the dashboard, the same source the daily file uses. Existing files carry the timestamp of the commit that wrote them.
 - **5 Sep 2026 — version 3.0 (unmasked)** switched every query to the `Count_Notification` measure, which returns the counts the dashboard suppresses as `n.p`. Cells that read 0 because the true value was below 5 now carry that value. The daily file recovered 41 cells, and the rebuilt year history recovered 1,684 across 60 diseases. Rabies was added upstream the same day and appears with 1 QLD case.
 

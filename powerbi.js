@@ -8,7 +8,7 @@
   All data queries POST hand-built DAX (SemanticQueryDataShapeCommand) bodies
   copied from the dashboard's own network traffic — the DatasetId, ReportId,
   VisualId and entity/column names inside them are what break if the
-  dashboard changes. Used by both index.js and legacy.js.
+  dashboard changes. Used by index.js.
 *******************************************************************************/
 
   // NPM packages that we installed
@@ -163,7 +163,7 @@
 //   'month'    → { <year>: { <month>: { <state>: count } } }
 // Every mode selects Count_Notification, which returns the real value rather
 // than the <5-masked one — see parseMeasure. This is the only query path now:
-// legacy.js and index.js's year/month builds all come through here.
+// index.js's year/month builds all come through here.
 //
 // Each mode is queried at its own granularity rather than summed from a finer
 // one, because the dashboard masks any cell <5 and summing finer cells
