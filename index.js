@@ -49,7 +49,7 @@
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
   const MONTH_BLOCK = 25;
   const RUN_LOG = 'data/log.json';
-  // A copy of each notifications_* file goes to data/archive/<date>/ before a
+  // A copy of each notifications_* file goes to data/archive/<YYYYMMDD>/ before a
   // run overwrites it. Git already holds every past version, so this exists to
   // give a consumer a fixed path to the previous days. 7 days is the limit.
   const ARCHIVE_DIR = 'data/archive';
@@ -91,7 +91,7 @@
       if (fs.existsSync(file)) {
         const old = JSON.parse(fs.readFileSync(file, 'utf8'));
         const stamp = Array.isArray(old) ? old[0]?.last_refreshed : old?.last_refreshed;
-        const date = stamp ? String(stamp).slice(0, 10) : null;
+        const date = stamp ? String(stamp).slice(0, 10).replace(/-/g, '') : null;
         if (date) {
           const dir = ARCHIVE_DIR + '/' + date;
           fs.mkdirSync(dir, { recursive: true });
@@ -105,10 +105,10 @@
   }
 
   // Keeps the newest ARCHIVE_DAYS date folders and deletes the rest. The names
-  // are YYYY-MM-DD, so a plain string sort is a date sort.
+  // are YYYYMMDD, so a plain string sort is a date sort.
   function pruneArchive() {
     if (!fs.existsSync(ARCHIVE_DIR)) return;
-    const dates = fs.readdirSync(ARCHIVE_DIR).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+    const dates = fs.readdirSync(ARCHIVE_DIR).filter(d => /^\d{8}$/.test(d)).sort();
     for (const d of dates.slice(0, Math.max(0, dates.length - ARCHIVE_DAYS))) {
       fs.rmSync(ARCHIVE_DIR + '/' + d, { recursive: true, force: true });
     }
