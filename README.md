@@ -28,6 +28,18 @@ The four `by_*` files are an ARRAY of period objects. Each element keeps the sam
 
 `notifications_all_time.json` is a single object of that shape with `report_date` instead of a period key.
 
+### 🗄️ Past days in `data/archive/`
+
+`data/archive/<YYYYMMDD>/` holds a copy of each of the 5 files as it stood before the run that replaced it. The date is the archived file's own `last_refreshed`, not the date it was copied. The newest 7 dates are kept.
+
+Read a past day from a fixed path rather than from git history:
+
+```
+data/archive/20260907/notifications_by_month.json
+```
+
+The shape is identical to the live file. `data/archive/20260905/` holds 4 files, not 5 — `notifications_by_day_diagnostic.json` did not exist then.
+
 **Counts are each period's OWN total, not a running total.** Do not subtract the prior period. Days sum to months and months to years, verified across 618,544 cells.
 
 **The newest day entries are incomplete.** A diagnosis reaches the system days after the fact, so recent dates read low and keep rising for weeks. Do not read the tail-off as a real fall in cases.
@@ -88,3 +100,5 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
   All 3 granularities reconcile for every disease and every state: 47,704 compared cells, no mismatch, and a shared total of 21,688,823.
 
 - **6 Sep 2026 — one month file per year** `data/month/` now holds one file per year (`<year>_notifications.json`), containing an array of that year's months, instead of 1,065 files named `<YYYYMM>_notifications.json`. Each array element keeps the exact shape the per-month file had, headers included, so the counts are untouched — only the packaging changed. A consumer that opened a `YYYYMM` path must now open the year and pick the month, and a MySQL load needs a `NESTED PATH` (see above).
+
+- **8 Sep 2026 — a rolling 7-day archive** `data/archive/<YYYYMMDD>/` now holds a copy of each `notifications_*` file as it stood before the run that replaced it, so a consumer can read a past day from a fixed path instead of git history. The folder date is the archived file's own `last_refreshed`, not the copy date. The newest 7 dates are kept. Nothing about the live files changed. 20260905 to 20260907 were backfilled from git history, and 20260905 holds 4 files rather than 5, because `notifications_by_day_diagnostic.json` did not exist then.
