@@ -9,11 +9,11 @@ Scrapes daily notifiable-disease notification snapshots for Australia from the N
 ## Commands
 
 - Install dependencies: `npm install`
-- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~15s, 67 requests)
-- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~10s, 67 requests
-- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~25s, 67 requests
-- Run the daily history by notification date: `node index.js reported` (rolling 60 days) — writes `data/notifications_by_day.json`, ~33s, 67 requests
-- Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~28s, 132 requests
+- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~17-45s, 66 requests)
+- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~26-38s, 66 requests
+- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~11-31s, 66 requests
+- Run the daily history by notification date: `node index.js reported` (rolling 60 days) — writes `data/notifications_by_day.json`, ~13-34s, 66 requests
+- Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~28-70s, 131 requests
 - There are no tests, lint, or build steps configured (`npm test` is a stub that always fails).
 - README.md (the data-consumer-facing schema doc) is not auto-checked against the code and can drift stale — verify its file paths/shapes against `data/` and this file before trusting it.
 
@@ -23,7 +23,7 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
 
 - `powerbi.js` — the shared DAX query client, with no CLI entry point of its own. Exports `STATE_CODES`/`MONTH_NAMES` plus:
 
-  **The measure (version 3.0).** Every query selects `Count_Notification`, not `Count_Notification_forgraph`. The `_forgraph` variant is what the dashboard visuals use, and it applies the `<5` mask — it reports a suppressed cell as a plain `0`, indistinguishable from a true zero. `Count_Notification` returns the real value. Confirmed against the dashboard on Rabies 2026 QLD, and on the Measles cells this repo already knew were masked (2019 ACT/SA/TAS, 2020 VIC/WA).
+  **The measure (version 3.0).** Every query selects `Count_Notification`, not `Count_Notification_forgraph`. The `_forgraph` variant is what the dashboard visuals use, and it applies the `<5` mask — it reports a suppressed cell as a plain `0`, indistinguishable from a true zero. `Count_Notification` returns the real value. Confirmed against the dashboard on the Measles cells this repo already knew were masked (2019 ACT/SA/TAS, 2020 VIC/WA), and on Rabies 2026 QLD. The source REMOVED Rabies from its disease list on 8 Sep 2026, so that second cell can no longer be re-checked live.
 
   **Two encodings, both of which produce plausible wrong numbers if mishandled** — `parseMeasure` in `powerbi.js` handles both, and every read of a measure value must go through it:
   1. Values arrive as **formatted display strings**, quoted and comma-grouped: `"'1'"`, `"'7,208'"`. A true zero arrives as the integer `0` instead. Miss the comma and `parseInt` silently truncates 7,208 to 7.
@@ -32,36 +32,44 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   2. `getToken()` — exchanges the embed token for a short-lived MWC token and capacity URI via PowerBI's `modelsAndExploration` endpoint.
   3. `getLatestUpdateDate()` — queries the `DataRefreshAEST` table (the same source backing the dashboard's "Last refreshed on" card) and returns both `reportDate` (`YYYYMMDD`, used for the filename/grouping key) and `lastRefreshed` (full AEST/AEDT timestamp, same underlying value with time preserved).
   4. `getCaseNumbers(..., mode)` — queries `NOTIFIABLE_EVENT_FACT` joined with `LOCATION_DIM`/`DISEASE_DIM`/`CASE_DIM` for per-state notification counts for one disease (restricted to Confirmed/Probable cases and excluding the `Hepatitis C (<24 months)` and `Unknown` disease groups). `mode` drives the query granularity AND return shape: `all-time` → `{ <state>: count }`; `year` → `{ <year>: { <state>: count } }`; `month` → `{ <year>: { <month>: { <state>: count } } }`. Each mode is queried at its own granularity, never derived from a finer one. This is the only query path: `all-time` and both `index.js` build functions come through it. An optional 5th arg `onlyYear` restricts a `month` query to one `DAX_Year` — needed because PowerBI truncates a result set at 500 year-month cells, which silently drops everything past ~41 years.
-  5. `data/ref_disease_year_map.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 132. A missing map is safe — every block then falls back to a live query.
+  **The disease list is not stable.** `getDiseaseList` reads it live from
+  `DISEASE_DIM` on every run, so the row count follows the source. It fell from
+  67 to 66 on 8 Sep 2026 when the source dropped `Rabies`, which held a real
+  count (QLD 1). A disappearance is silent: no error, just one row fewer in
+  every file. `data/archive/` is how you find one — compare the current
+  `notifications_all_time.json` against a past day's copy.
 
-     The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years. `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973).
+  5. `data/ref_disease_year_map.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 131. A missing map is safe — every block then falls back to a live query.
 
-     The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years.
+     The list matters more than a first/last range would. 22 diseases have gaps inside their span (Chlamydial infection is active in 39 of 89 years), so a range would query thousands of empty years. `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973), which made `all-time` disagree with the year files.
 
-     `floor_year` also replaced a hardcoded 1990 floor that silently dropped real pre-1990 cases (Chlamydial infection back to 1938, Gonococcal to 1973) and made `all-time` disagree with the year files.
-- `index.js` — the entry point. First CLI arg selects the mode (`all-time` default, or `day`/`year`/`month`), with an optional second `scopeArg`. `getDiseaseList(mode, scopeArg)` queries `DISEASE_DIM` for the disease names, then delegates to one build function per mode. Every mode writes ONE flat file in `data/` and always rebuilds it whole — a scoped run would otherwise drop every period it did not target. Each build routes its queries through `countedGetCaseNumbers`, so `logRun` can record the exact request count in `data/log.json`.
+- `index.js` — the entry point. First CLI arg selects the mode (`all-time` default, or `day`/`reported`/`year`/`month`), with an optional second `scopeArg`. `getDiseaseList(mode, scopeArg)` queries `DISEASE_DIM` for the disease names, then delegates to one build function per mode. Every mode writes ONE flat file in `data/` and always rebuilds it whole — a scoped run would otherwise drop every period it did not target. Each build routes its queries through `countedGetCaseNumbers`, so `logRun` can record the exact request count in `data/log.json`.
 
-  **Request cost per mode**, measured and logged. Each is one query per disease, except `month`:
+  **Request cost per mode**, measured and logged. Each mode is one query per
+  disease, except `month`. The request count TRACKS the disease count, so it
+  moves when the source adds or drops a disease — read the current figure off
+  `data/log.json` rather than trusting the table. Seconds vary by a factor of 3
+  between runs, because the dashboard's own response time dominates.
 
-  | Mode | Requests | Seconds |
+  | Mode | Requests | Seconds (measured range) |
   | --- | --- | --- |
-  | `all-time` | 67 | ~15 |
-  | `year` (full history) | 67 | ~10 |
-  | `day` (60-day window) | 67 | ~16 |
-  | `reported` (60-day window) | 67 | ~20 |
-  | `month` (full history) | 132 | ~28 |
+  | `all-time` | 66 | 17-45 |
+  | `year` (full history) | 66 | 26-38 |
+  | `day` (60-day window) | 66 | 11-31 |
+  | `reported` (60-day window) | 66 | 13-34 |
+  | `month` (full history) | 131 | 28-70 |
 
   - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost. It ALSO rewrites `ref_disease_year_map.json` from the years the query returned, as a free by-product. **`year` must therefore run before `month`**, which reads that map; the CI workflow orders them accordingly. `floor_year` comes from the query data, never from the previous map — reading it back would pin the floor forever and hide any earlier year the source later exposes.
   - `buildDayOutput` — one query per disease covers the WHOLE window, grouping on `DIAGNOSIS_DATE` (primary) with STATE secondary. The date arrives as `G0`, the same single-primary-dimension shape `year` uses. Keep the window under 500 days. One row is one day with cases, so the 500-row cap bites at 500 days, NOT at 365 — measured 6 Sep 2026: 249 and 365 days returned every row, while 614, 730, 1096 and 2441 days all returned exactly 500 and dropped the NEWEST data with no error.
-  - `buildMonthOutput` — one query per disease-BLOCK of `MONTH_BLOCK` (25) years. 25 × 12 = 300 cells, under the cap. `ref_disease_year_map.json` skips a block a disease has no years in, which is what keeps this at 132 rather than 335.
+  - `buildMonthOutput` — one query per disease-BLOCK of `MONTH_BLOCK` (25) years. 25 × 12 = 300 cells, under the cap. `ref_disease_year_map.json` skips a block a disease has no years in, which is what keeps this at 131 rather than 335.
 
   **The 500-row cap is the constraint behind all of this.** It applies whenever a SECONDARY axis is present, and `Window.Count` does NOT raise it — 500, 1000, 5000 and 20000 all return exactly 500 rows. It is SILENT: three different diseases returned identical spans ending at the same date, which only looked wrong because they were compared. Any query returning exactly 500 rows must be treated as truncated.
 
-  Dropping the secondary axis DOES lift the cap (13,379 rows returned), but then `Count_Notification` returns 0 under a date grouping, and the `_forgraph` measure that does work re-applies the <5 mask — verified: Rabies 2026 QLD (true value 1) and Measles 2019 ACT (true value 2) both came back 0. So per-state counts and a long history cannot be had in one query. This is why `day` is windowed and `month` is blocked.
+  Dropping the secondary axis DOES lift the cap (13,379 rows returned), but then `Count_Notification` returns 0 under a date grouping, and the `_forgraph` measure that does work re-applies the <5 mask — verified: Measles 2019 ACT (true value 2) and Rabies 2026 QLD (true value 1, before the source dropped Rabies) both came back 0. So per-state counts and a long history cannot be had in one query. This is why `day` is windowed and `month` is blocked.
 
 All PowerBI requests are raw `fetch` calls with hand-built DAX query JSON bodies (`SemanticQueryDataShapeCommand`) sent as strings — there is no query builder abstraction. If PowerBI changes its dataset/report IDs or query shape, these request bodies (`DatasetId`, `ReportId`, `VisualId`, column/entity names) are what break and need updating.
 
-The three modes also produce **two different response LAYOUTS**, because PowerBI rejects a secondary axis with no primary (`SecondaryGroupsWithoutPrimary`): `year`/`month` keep STATE on the *secondary* axis (the per-row `X` array, with the period(s) as primary rows), but `all-time` has no period dimension, so STATE moves to the *primary* axis — each `DM0` row is one state, projected as `C: [state, measure]`, and there is no `X` array or `SH` state list at all.
+The 5 modes also produce **two different response LAYOUTS**, because PowerBI rejects a secondary axis with no primary (`SecondaryGroupsWithoutPrimary`): `year`/`month` keep STATE on the *secondary* axis (the per-row `X` array, with the period(s) as primary rows), but `all-time` has no period dimension, so STATE moves to the *primary* axis — each `DM0` row is one state, projected as `C: [state, measure]`, and there is no `X` array or `SH` state list at all.
 
 Response parsing relies on PowerBI's compact `dsr.DS[0]` result-set format (`PH`/`DM0`/`SH`/`DM1`). Two distinct sparse-encoding schemes are in play and are easy to conflate:
 - **Measure sparsity** (the `X` array per row, one entry per state, in `year`/`month`): a state's `M0` is omitted when it repeats the previous state's value — see the "check if value exists, otherwise repeat" logic in `getCaseNumbers`.

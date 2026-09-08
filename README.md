@@ -1,13 +1,18 @@
 # National Notifiable Disease Surveillance System data for Australia #
 Notification-count snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
-All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded. The three `notifications_by_*` files wrap those objects in an array, one per period.
+All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the 8 state counts inlined in the fixed order given by `columns`. AUS/national is excluded. The four `notifications_by_*` files wrap those objects in an array, one per period.
 
 Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
 
+**The disease list changes.** The scraper reads it live from the dashboard on every run, so a
+disease can appear or disappear without warning. `Rabies` was dropped by the source on 8 Sep
+2026, taking the row count from 67 to 66. Do not hardcode the list or the count. A past day in
+`data/archive/` shows you what changed.
+
 Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
-### 📁 Five data files, flat in `data/`
+### 📁 Five data files in `data/`
 
 | File | Holds | Keyed by |
 | --- | --- | --- |
@@ -49,7 +54,7 @@ Alongside sit `ref_disease_groups.json` and `ref_disease_year_map.json` (referen
 | Field | Description |
 | --- | --- |
 | `report_date` | Reporting date AEDT. Only in `notifications_all_time.json` |
-| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. On the object in `notifications_all_time.json`, and on every element of the three `notifications_by_*` files. Use it to tell when a period was last regenerated |
+| `last_refreshed` | Full timestamp (AEST/AEDT) the underlying dashboard data was last refreshed. On the object in `notifications_all_time.json`, and on every element of the four `notifications_by_*` files. Use it to tell when a period was last regenerated |
 | `date` / `year` / `month` | The period the counts in `rows` cover: `date` per day element, `year` per year element, both per month element |
 | `columns` | Column order for every entry in `rows` |
 | `rows[]` | `[disease, <count per state>]` — confirmed/probable notification counts for the file's own period |
@@ -102,3 +107,5 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **6 Sep 2026 — one month file per year** `data/month/` now holds one file per year (`<year>_notifications.json`), containing an array of that year's months, instead of 1,065 files named `<YYYYMM>_notifications.json`. Each array element keeps the exact shape the per-month file had, headers included, so the counts are untouched — only the packaging changed. A consumer that opened a `YYYYMM` path must now open the year and pick the month, and a MySQL load needs a `NESTED PATH` (see above).
 
 - **8 Sep 2026 — a rolling 7-day archive** `data/archive/<YYYYMMDD>/` now holds a copy of each `notifications_*` file as it stood before the run that replaced it, so a consumer can read a past day from a fixed path instead of git history. The folder date is the archived file's own `last_refreshed`, not the copy date. The newest 7 dates are kept. Nothing about the live files changed. 20260905 to 20260907 were backfilled from git history, and 20260905 holds 4 files rather than 5, because `notifications_by_day_diagnostic.json` did not exist then.
+
+- **8 Sep 2026 — the source dropped `Rabies`** The disease list fell from 67 rows to 66. Rabies appeared upstream on 5 Sep with 1 QLD case and left 3 days later, so the row is gone from every file, including the full year and month history. Only that row went; the other 66 diseases carried on with their normal daily movement. A consumer that hardcodes 67 diseases, or that expects a fixed row order, breaks here. The list is read live from the dashboard on every run, so treat it as variable. `data/archive/20260907/` holds the last copies that still carry the row.
