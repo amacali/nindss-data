@@ -20,12 +20,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'all-time = totals to date; day = rolling 60 days by diagnosis date; reported = the same by notification date; year = per-year; month = monthly history'
+        description: 'all-time = totals to date; day = rolling 60 days by diagnosis date; year = per-year; month = monthly history'
         type: choice
         options:
           - all-time
           - day
-          - reported
           - year
           - month
         default: all-time
@@ -79,7 +78,6 @@ jobs:
         else
           node index.js all-time
           node index.js day
-          node index.js reported
           node index.js year     # writes ref_disease_year_map.json
           node index.js month    # reads it — must follow 'year'
         fi

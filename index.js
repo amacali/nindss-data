@@ -1,11 +1,10 @@
 /*******************************************************************************
   NINDSS notification scraper — pulls notifiable-disease notification counts
-  for Australia from the NINDSS PowerBI dashboard. Three modes:
+  for Australia from the NINDSS PowerBI dashboard. Four modes:
     node index.js / all-time        → data/notifications_all_time.json (daily, default)
     node index.js year [Y|all]      → data/notifications_by_year.json (on request)
     node index.js month [YM|Y|all]  → data/notifications_by_month.json (on request)
     node index.js day [YMD|YM]      → data/notifications_by_day_diagnostic.json (rolling 60d)
-    node index.js reported [YMD|YM] → data/notifications_by_day.json (rolling 60d)
 
   Both write one file per YEAR, holding each period's OWN count rather than a
   running total. A 'year' file is one object with a row per disease; a 'month'
@@ -34,12 +33,11 @@
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
     : 1938;
   const ALL_TIME_FILE = 'data/notifications_all_time.json';
-  // Two daily files over the SAME window, on two different date columns. They
-  // disagree by about 27% over a year, so they are 2 datasets, not 1 — never sum
-  // one against the other. Note the mode names invert the file names: 'day'
-  // writes the _diagnostic file, 'reported' writes the plain one.
+  // The daily file, on DIAGNOSIS_DATE — the basis the year and month files
+  // share, so all 3 reconcile. A second file on NOTIFICATION_DATE was dropped
+  // on 8 Sep 2026; the columns disagree by about 27% over a year, and only the
+  // diagnosis basis reconciles with anything else here.
   const DIAGNOSIS_DAY_FILE = 'data/notifications_by_day_diagnostic.json';   // 'day' mode, DIAGNOSIS_DATE
-  const NOTIFICATION_DAY_FILE = 'data/notifications_by_day.json';           // 'reported' mode, NOTIFICATION_DATE
   // Days kept in the rolling window. A date arrives late, so the newest days
   // are always incomplete and keep rising for weeks; rebuilding the whole
   // window each run lets every file self-correct.
@@ -111,8 +109,8 @@
 
 
 
-// Writes `outFile`: an ARRAY of day objects, each holding that day's OWN
-// per-state counts, on the date column that `mode` selects.
+// Writes DIAGNOSIS_DAY_FILE: an ARRAY of day objects, each holding that day's
+// OWN per-state counts, on DIAGNOSIS_DATE.
 //
 // ONE query per disease covers the whole window, not one per disease-day: the
 // query groups on the date column (primary) with STATE secondary, so a 60-day
@@ -130,9 +128,7 @@
 // later, so those counts keep rising. Rebuilding the whole window each run is
 // what corrects them.
 //
-// `mode` is 'day' (DIAGNOSIS_DATE) or 'reported' (NOTIFICATION_DATE); `outFile`
-// is the file that mode writes.
-async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed, mode, outFile) {
+async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed) {
   const from = daysToFetch[0];
   const to = daysToFetch[daysToFetch.length - 1];
   const range = {
@@ -157,8 +153,8 @@ async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRef
     last_refreshed: lastRefreshed, date,
     columns: ['disease', ...STATE_CODES], rows: byDay[date]
   }));
-  writeWithArchive(outFile, JSON.stringify(dayFile));
-  console.log('Wrote ' + dayFile.length + ' days to ' + outFile);
+  writeWithArchive(DIAGNOSIS_DAY_FILE, JSON.stringify(dayFile));
+  console.log('Wrote ' + dayFile.length + ' days to ' + DIAGNOSIS_DAY_FILE);
 }
 
 // Turns the CLI's optional third arg into a list of 'YYYYMMDD' days, newest
@@ -396,13 +392,12 @@ async function getDiseaseList(mode, scopeArg) {
     });
     fs.writeFileSync('data/ref_disease_groups.json', JSON.stringify(diseaseGroups, null, 2));
 
-    // 'day'/'reported' modes — see buildDayOutput. Scope defaults to the rolling
-    // DAY_WINDOW ending on reportDate; scopeArg can target one day or a month.
-    if (mode === 'day' || mode === 'reported') {
-      const outFile = mode === 'reported' ? NOTIFICATION_DAY_FILE : DIAGNOSIS_DAY_FILE;
+    // 'day' mode — see buildDayOutput. Scope defaults to the rolling DAY_WINDOW
+    // ending on reportDate; scopeArg can target one day or a month.
+    if (mode === 'day') {
       const daysToFetch = parseDayScope(scopeArg, reportDate);
-      await buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed, mode, outFile);
-      logRun(mode, scopeArg, startedAt, { days: daysToFetch.length, file: outFile });
+      await buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed);
+      logRun(mode, scopeArg, startedAt, { days: daysToFetch.length, file: DIAGNOSIS_DAY_FILE });
       return;
     }
 
@@ -457,6 +452,6 @@ async function getDiseaseList(mode, scopeArg) {
 }
   // Run the scraper — see the header comment above for the mode/scope table.
   const arg = process.argv[2];
-  const mode = (arg === 'year' || arg === 'month' || arg === 'day' || arg === 'reported') ? arg : 'all-time';
+  const mode = (arg === 'year' || arg === 'month' || arg === 'day') ? arg : 'all-time';
   const scopeArg = process.argv[3];
   getDiseaseList(mode, scopeArg);

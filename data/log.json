@@ -163,5 +163,14 @@
     "seconds": 57.5,
     "requests": 131,
     "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-09-08T08:08:01.702Z",
+    "seconds": 20.6,
+    "requests": 66,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
   }
 ]
