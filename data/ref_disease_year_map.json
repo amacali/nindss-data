@@ -1,5 +1,5 @@
 {
-  "last_refreshed": "2026-09-07T15:31:06+10:00",
+  "last_refreshed": "2026-09-08T15:30:47+10:00",
   "floor_year": 1938,
   "diseases": {
     "Anthrax": {
@@ -1538,13 +1538,6 @@
         2023,
         2024,
         2025,
-        2026
-      ]
-    },
-    "Rabies": {
-      "first_year": 2026,
-      "last_year": 2026,
-      "years": [
         2026
       ]
     },
