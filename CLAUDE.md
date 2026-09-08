@@ -88,9 +88,11 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
 - `data/ref_disease_groups.json`, `data/ref_disease_year_map.json` — see Architecture.
 - `data/log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
-- `data/archive/<YYYYMMDD>/` — a copy of each `notifications_*` file as it stood BEFORE the run that replaced it, so a consumer has a fixed path to a past day. The folder date comes from the archived file's OWN `last_refreshed`, never from today, so a run that finds no new refresh cannot mislabel a folder. `writeWithArchive` in `index.js` writes it and keeps the newest 7 dates.
+- `data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json` — a copy of the day-diagnostic file as it stood BEFORE the run that replaced it, flat in the folder, no subfolders. Every date is kept, and nothing is pruned. The date prefix comes from the copy's OWN `last_refreshed`, never from today, so a run that finds no new refresh cannot mislabel a copy. A same-date copy overwrites, so a re-run is safe.
 
-  The prune does not shrink the repo — git keeps a deleted folder forever, and the archive is committed, so each run adds a few MB permanently. Folders before 20260908 were backfilled from git history; 20260905 holds 4 files, because `notifications_by_day_diagnostic.json` did not exist yet.
+  **Only this 1 file is archived.** Its newest days are incomplete and keep rising for weeks, so a past copy shows what the numbers looked like before the late notifications landed — no other file has that property. At 167 KB a day the series costs about 61 MB a year. Archiving all 5 would cost 1.3 GB a year, and git already holds every past version as a delta.
+
+  `writeWithArchive` in `index.js` writes it. The 20260906 and 20260907 copies were backfilled from git history; the mode did not exist before then.
 
 Days sum to months and months to years, verified to 0 difference across 618,544 cells. Every file is rebuilt WHOLE on each run, because a scoped run would otherwise drop every period it did not target.
 

@@ -49,11 +49,17 @@
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
   const MONTH_BLOCK = 25;
   const RUN_LOG = 'data/log.json';
-  // A copy of each notifications_* file goes to data/archive/<YYYYMMDD>/ before a
-  // run overwrites it. Git already holds every past version, so this exists to
-  // give a consumer a fixed path to the previous days. 7 days is the limit.
+  // Before a run overwrites the day-diagnostic file, its current contents go to
+  // data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json. Every date is
+  // kept, and nothing is pruned.
+  //
+  // ONLY this file is archived. It is the one worth a series: its newest days
+  // are incomplete and keep rising for weeks, so a past copy shows what the
+  // numbers looked like before the late notifications landed. At 167 KB a day
+  // that costs about 61 MB a year. The other 4 files change slowly or hold a
+  // running total, and git already keeps every past version of them as a delta.
   const ARCHIVE_DIR = 'data/archive';
-  const ARCHIVE_DAYS = 7;
+  const ARCHIVE_FILE = DIAGNOSIS_DAY_FILE;
 
   // Every PowerBI request goes through getCaseNumbers, so counting calls here
   // gives an exact request count per run without touching the client.
@@ -77,42 +83,33 @@
     console.log(`[${mode}] ${entry.seconds}s, ${entry.requests} requests`);
   }
 
-  // Copies the CURRENT contents of `file` into data/archive/<date>/ before the
-  // caller overwrites it, then prunes the archive to the newest ARCHIVE_DAYS
-  // folders. The date comes from the OLD file's own last_refreshed, not from
-  // today: a run that finds no new dashboard refresh must not open a folder
-  // under a date the data does not belong to. Every notification file carries
-  // that stamp, either at the top level (all-time) or on each array element.
+  // Copies the CURRENT contents of `file` into data/archive/ under a dated name,
+  // then writes the new contents. Only ARCHIVE_FILE is archived; every other
+  // file writes straight through.
   //
-  // A missing or unreadable old file is not an error — the first run of a mode
-  // has nothing to archive, and a copy is never worth failing a scrape over.
+  // The date comes from the OLD file's own last_refreshed, not from today: a
+  // run that finds no new dashboard refresh must not label a copy with a date
+  // the data does not belong to. A same-date copy overwrites, so a re-run is
+  // safe.
+  //
+  // A missing or unreadable old file is not an error — the first run has
+  // nothing to archive, and a copy is never worth failing a scrape over.
   function writeWithArchive(file, contents) {
     try {
-      if (fs.existsSync(file)) {
+      if (file === ARCHIVE_FILE && fs.existsSync(file)) {
         const old = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const stamp = Array.isArray(old) ? old[0]?.last_refreshed : old?.last_refreshed;
-        const date = stamp ? String(stamp).slice(0, 10).replace(/-/g, '') : null;
+        const date = old[0]?.last_refreshed?.slice(0, 10).replace(/-/g, '');
         if (date) {
-          const dir = ARCHIVE_DIR + '/' + date;
-          fs.mkdirSync(dir, { recursive: true });
-          fs.copyFileSync(file, dir + '/' + file.split('/').pop());
+          fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+          fs.copyFileSync(file, ARCHIVE_DIR + '/' + date + '_' + file.split('/').pop());
         }
       }
     } catch (e) { console.log('Archive skipped for ' + file + ': ' + e.message); }
 
     fs.writeFileSync(file, contents);
-    pruneArchive();
   }
 
-  // Keeps the newest ARCHIVE_DAYS date folders and deletes the rest. The names
-  // are YYYYMMDD, so a plain string sort is a date sort.
-  function pruneArchive() {
-    if (!fs.existsSync(ARCHIVE_DIR)) return;
-    const dates = fs.readdirSync(ARCHIVE_DIR).filter(d => /^\d{8}$/.test(d)).sort();
-    for (const d of dates.slice(0, Math.max(0, dates.length - ARCHIVE_DAYS))) {
-      fs.rmSync(ARCHIVE_DIR + '/' + d, { recursive: true, force: true });
-    }
-  }
+
 
 // Writes `outFile`: an ARRAY of day objects, each holding that day's OWN
 // per-state counts, on the date column that `mode` selects.

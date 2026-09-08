@@ -35,15 +35,15 @@ The four `by_*` files are an ARRAY of period objects. Each element keeps the sam
 
 ### 🗄️ Past days in `data/archive/`
 
-`data/archive/<YYYYMMDD>/` holds a copy of each of the 5 files as it stood before the run that replaced it. The date is the archived file's own `last_refreshed`, not the date it was copied. The newest 7 dates are kept.
-
-Read a past day from a fixed path rather than from git history:
+`data/archive/` keeps a dated copy of `notifications_by_day_diagnostic.json` from every run, and nothing else:
 
 ```
-data/archive/20260907/notifications_by_month.json
+data/archive/20260907_notifications_by_day_diagnostic.json
 ```
 
-The shape is identical to the live file. `data/archive/20260905/` holds 4 files, not 5 — `notifications_by_day_diagnostic.json` did not exist then.
+The prefix is that copy's own `last_refreshed` date. Every date is kept, so you can see how a given day's counts filled in over the following weeks as late notifications landed. The shape is identical to the live file.
+
+The other 4 files are not archived — a full history of all 5 would add over 1 GB a year to this repo. For a past version of those, read git history.
 
 **Counts are each period's OWN total, not a running total.** Do not subtract the prior period. Days sum to months and months to years, verified across 618,544 cells.
 
@@ -109,3 +109,5 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **8 Sep 2026 — a rolling 7-day archive** `data/archive/<YYYYMMDD>/` now holds a copy of each `notifications_*` file as it stood before the run that replaced it, so a consumer can read a past day from a fixed path instead of git history. The folder date is the archived file's own `last_refreshed`, not the copy date. The newest 7 dates are kept. Nothing about the live files changed. 20260905 to 20260907 were backfilled from git history, and 20260905 holds 4 files rather than 5, because `notifications_by_day_diagnostic.json` did not exist then.
 
 - **8 Sep 2026 — the source dropped `Rabies`** The disease list fell from 67 rows to 66. Rabies appeared upstream on 5 Sep with 1 QLD case and left 3 days later, so the row is gone from every file, including the full year and month history. Only that row went; the other 66 diseases carried on with their normal daily movement. A consumer that hardcodes 67 diseases, or that expects a fixed row order, breaks here. The list is read live from the dashboard on every run, so treat it as variable. `data/archive/20260907/` holds the last copies that still carry the row.
+
+- **8 Sep 2026 — the archive is flat, dated, and diagnostic-only** `data/archive/<YYYYMMDD>/` becomes `data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json`. That file now keeps every date rather than 7, so you can see how a day's counts filled in over the following weeks. The other 4 files are no longer archived at all — a full history of all 5 costs over 1 GB a year, and git already holds every past version as a delta.
