@@ -82,7 +82,7 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_all_time.json` — `{ report_date, last_refreshed, columns, rows }`, one row per disease, cumulative to date. Not an array.
 - `data/notifications_by_day_diagnostic.json` — 60 elements, keyed `date` (`YYYY-MM-DD`). A rolling window by DIAGNOSIS_DATE, always rebuilt whole. The `_diagnostic` suffix is now redundant, but renaming it would break every consumer, so it stays.
 
-  A second daily file on NOTIFICATION_DATE, and its `reported` mode, were removed on 8 Sep 2026. The columns disagree by about 27% over a year, and only the diagnosis basis reconciles with the month and year files. `powerbi.js` keeps `DATE_COL` as a named constant, so the other column is 1 edit away.
+  A second daily file on NOTIFICATION_DATE, and its `reported` mode, were removed on 8 Sep 2026. The columns disagree by about 27% over a year, and only the diagnosis basis reconciles with the month and year files. `powerbi.js` now hardcodes `DIAGNOSIS_DATE`; restoring the other column means re-deriving it from the dashboard.
 - `data/notifications_by_month.json` — 1,065 elements, keyed `year` + `month`.
 - `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
 - `data/ref_disease_groups.json`, `data/ref_disease_year_map.json` — see Architecture.

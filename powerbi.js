@@ -203,9 +203,6 @@
 // the dashboard's own filter reads
 // "Diagnosis Year, Diagnosis Quarter, Diagnosis Month Name", and a diagnosis
 // year query matches data/year/2025_notifications.json to the case (1,171,052).
-// The FACT table also carries NOTIFICATION_DATE, which this scraper no longer
-// reads. The two columns disagree by 27% over 2025, so a query that swapped the
-// column would reconcile with nothing else here and would still look plausible.
 export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear,dayRange) {
 
   // The three queries differ only in which period dimensions are projected and
@@ -226,11 +223,9 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
   // Period selects (between STATE and the measure), primary projections, binding,
   // and order-by, per mode.
   // 'day' groups and filters on DIAGNOSIS_DATE, the basis the year and month
-  // files share. DATE_COL stays a named constant because the column name is
-  // repeated in the select, the filter and the order-by below.
+  // files share.
   const dayMode = mode === 'day';
-  const DATE_COL = 'DIAGNOSIS_DATE';
-  const SEL_DATE = "{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT." + DATE_COL + "\"}";
+  const SEL_DATE = "{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.DIAGNOSIS_DATE\"}";
   const periodSelect = mode === 'month' ? SEL_YEAR + "," + SEL_MONTH + ","
                      : mode === 'year'  ? SEL_YEAR + ","
                      : dayMode          ? SEL_DATE + ","
@@ -243,18 +238,18 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
   const binding = flatMode
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
     : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":5000}},\"Secondary\":{\"Top\":{\"Count\":100}}},\"Version\":1}";
-  const ORDER_DATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}}},";
+  const ORDER_DATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}}},";
   const orderBy = flatMode        ? ORDER_STATE
                 : dayMode         ? ORDER_DATE + ORDER_STATE
                 : ORDER_YEAR + ORDER_STATE;
 
-  // Half-open DATE_COL range for 'day'. ComparisonKind: 0 '=', 1 '>',
+  // Half-open DIAGNOSIS_DATE range for 'day'. ComparisonKind: 0 '=', 1 '>',
   // 2 '>=', 3 '<', 4 '<=' — verified against DAX_Year, where the totals for
   // kinds 2 and 4 must equal the sum of their parts. Using 1 as an upper bound
   // (the intuitive but wrong reading) returns plausible garbage, not an error.
   const dayFilter = dayRange
-    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":2,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.from + "T00:00:00'\"}}}}}"
-    + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
+    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":2,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.from + "T00:00:00'\"}}}}}"
+    + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
     : "";
 
   // `onlyYear` is either one year (equality) or [from, to] for a BLOCK of
