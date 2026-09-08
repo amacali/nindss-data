@@ -49,6 +49,11 @@
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
   const MONTH_BLOCK = 25;
   const RUN_LOG = 'data/log.json';
+  // A copy of each notifications_* file goes to data/archive/<date>/ before a
+  // run overwrites it. Git already holds every past version, so this exists to
+  // give a consumer a fixed path to the previous days. 7 days is the limit.
+  const ARCHIVE_DIR = 'data/archive';
+  const ARCHIVE_DAYS = 7;
 
   // Every PowerBI request goes through getCaseNumbers, so counting calls here
   // gives an exact request count per run without touching the client.
@@ -70,6 +75,43 @@
     log.push(entry);
     fs.writeFileSync(RUN_LOG, JSON.stringify(log.slice(-100), null, 2));
     console.log(`[${mode}] ${entry.seconds}s, ${entry.requests} requests`);
+  }
+
+  // Copies the CURRENT contents of `file` into data/archive/<date>/ before the
+  // caller overwrites it, then prunes the archive to the newest ARCHIVE_DAYS
+  // folders. The date comes from the OLD file's own last_refreshed, not from
+  // today: a run that finds no new dashboard refresh must not open a folder
+  // under a date the data does not belong to. Every notification file carries
+  // that stamp, either at the top level (all-time) or on each array element.
+  //
+  // A missing or unreadable old file is not an error — the first run of a mode
+  // has nothing to archive, and a copy is never worth failing a scrape over.
+  function writeWithArchive(file, contents) {
+    try {
+      if (fs.existsSync(file)) {
+        const old = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const stamp = Array.isArray(old) ? old[0]?.last_refreshed : old?.last_refreshed;
+        const date = stamp ? String(stamp).slice(0, 10) : null;
+        if (date) {
+          const dir = ARCHIVE_DIR + '/' + date;
+          fs.mkdirSync(dir, { recursive: true });
+          fs.copyFileSync(file, dir + '/' + file.split('/').pop());
+        }
+      }
+    } catch (e) { console.log('Archive skipped for ' + file + ': ' + e.message); }
+
+    fs.writeFileSync(file, contents);
+    pruneArchive();
+  }
+
+  // Keeps the newest ARCHIVE_DAYS date folders and deletes the rest. The names
+  // are YYYY-MM-DD, so a plain string sort is a date sort.
+  function pruneArchive() {
+    if (!fs.existsSync(ARCHIVE_DIR)) return;
+    const dates = fs.readdirSync(ARCHIVE_DIR).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+    for (const d of dates.slice(0, Math.max(0, dates.length - ARCHIVE_DAYS))) {
+      fs.rmSync(ARCHIVE_DIR + '/' + d, { recursive: true, force: true });
+    }
   }
 
 // Writes `outFile`: an ARRAY of day objects, each holding that day's OWN
@@ -118,7 +160,7 @@ async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRef
     last_refreshed: lastRefreshed, date,
     columns: ['disease', ...STATE_CODES], rows: byDay[date]
   }));
-  fs.writeFileSync(outFile, JSON.stringify(dayFile));
+  writeWithArchive(outFile, JSON.stringify(dayFile));
   console.log('Wrote ' + dayFile.length + ' days to ' + outFile);
 }
 
@@ -213,7 +255,7 @@ async function buildYearOutput(capacityUri, token, diseases, yearsToFetch, lastR
     last_refreshed: lastRefreshed, year,
     columns: ['disease', ...STATE_CODES], rows: byYear[year]
   }));
-  fs.writeFileSync(YEAR_FILE, JSON.stringify(yearFile));
+  writeWithArchive(YEAR_FILE, JSON.stringify(yearFile));
   console.log('Wrote ' + allYears.length + ' years to ' + YEAR_FILE);
 }
 
@@ -303,7 +345,7 @@ async function buildMonthOutput(capacityUri, token, diseases, periodsToFetch, la
                        columns: ['disease', ...STATE_CODES], rows: byPeriod[year][month] });
     }
   }
-  fs.writeFileSync(MONTH_FILE, JSON.stringify(monthFile));
+  writeWithArchive(MONTH_FILE, JSON.stringify(monthFile));
   console.log('Wrote ' + monthFile.length + ' months to ' + MONTH_FILE);
 }
 
@@ -408,7 +450,7 @@ async function getDiseaseList(mode, scopeArg) {
       output.rows.push([diseaseName, ...STATE_CODES.map(s => result[s] ?? 0)]);
     }
 
-    fs.writeFileSync(ALL_TIME_FILE, JSON.stringify(output));
+    writeWithArchive(ALL_TIME_FILE, JSON.stringify(output));
     console.log('Wrote ' + output.rows.length + ' diseases to ' + ALL_TIME_FILE);
     logRun(mode, scopeArg, startedAt, { diseases: output.rows.length, file: ALL_TIME_FILE });
 

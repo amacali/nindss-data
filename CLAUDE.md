@@ -69,7 +69,7 @@ Response parsing relies on PowerBI's compact `dsr.DS[0]` result-set format (`PH`
 
 ## Data output
 
-Eight flat files in `data/`, no subfolders. The five `notifications_*` files are the dataset; the three `ref_*` files are reference data the scraper writes for itself.
+Eight flat files in `data/`, plus the `data/archive/` folder. The five `notifications_*` files are the dataset; the three `ref_*` files are reference data the scraper writes for itself.
 
 Each `notifications_by_*` file is an ARRAY of period objects, each keeping the full `{ last_refreshed, <period>, columns, rows }` shape. `columns` is `["disease", <8 state codes>]` in the fixed `STATE_CODES` order; AUS/national is excluded by the query. Counts are unmasked (version 3.0) and are that period's OWN count, never a running total — a consumer must NOT subtract the prior period.
 
@@ -80,6 +80,9 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
 - `data/ref_disease_groups.json`, `data/ref_disease_year_map.json` — see Architecture.
 - `data/log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
+- `data/archive/<YYYY-MM-DD>/` — a copy of each `notifications_*` file as it stood BEFORE the run that replaced it, so a consumer has a fixed path to a past day. The folder date comes from the archived file's OWN `last_refreshed`, never from today, so a run that finds no new refresh cannot mislabel a folder. `writeWithArchive` in `index.js` writes it and keeps the newest 7 dates.
+
+  The prune does not shrink the repo — git keeps a deleted folder forever, and the archive is committed, so each run adds a few MB permanently. Folders before 2026-09-08 were backfilled from git history; 2026-09-05 holds 4 files, because `notifications_by_day_diagnostic.json` did not exist yet.
 
 Days sum to months and months to years, verified to 0 difference across 618,544 cells. Every file is rebuilt WHOLE on each run, because a scoped run would otherwise drop every period it did not target.
 
