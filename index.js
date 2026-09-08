@@ -1,11 +1,10 @@
 /*******************************************************************************
   NINDSS notification scraper — pulls notifiable-disease notification counts
-  for Australia from the NINDSS PowerBI dashboard. Three modes:
+  for Australia from the NINDSS PowerBI dashboard. Four modes:
     node index.js / all-time        → data/notifications_all_time.json (daily, default)
     node index.js year [Y|all]      → data/notifications_by_year.json (on request)
     node index.js month [YM|Y|all]  → data/notifications_by_month.json (on request)
     node index.js day [YMD|YM]      → data/notifications_by_day_diagnostic.json (rolling 60d)
-    node index.js reported [YMD|YM] → data/notifications_by_day.json (rolling 60d)
 
   Both write one file per YEAR, holding each period's OWN count rather than a
   running total. A 'year' file is one object with a row per disease; a 'month'
@@ -34,12 +33,11 @@
     ? JSON.parse(fs.readFileSync(DISEASE_YEARS_PATH, 'utf8')).floor_year
     : 1938;
   const ALL_TIME_FILE = 'data/notifications_all_time.json';
-  // Two daily files over the SAME window, on two different date columns. They
-  // disagree by about 27% over a year, so they are 2 datasets, not 1 — never sum
-  // one against the other. Note the mode names invert the file names: 'day'
-  // writes the _diagnostic file, 'reported' writes the plain one.
+  // The daily file, on DIAGNOSIS_DATE — the basis the year and month files
+  // share, so all 3 reconcile. A second file on NOTIFICATION_DATE was dropped
+  // on 8 Sep 2026; the columns disagree by about 27% over a year, and only the
+  // diagnosis basis reconciles with anything else here.
   const DIAGNOSIS_DAY_FILE = 'data/notifications_by_day_diagnostic.json';   // 'day' mode, DIAGNOSIS_DATE
-  const NOTIFICATION_DAY_FILE = 'data/notifications_by_day.json';           // 'reported' mode, NOTIFICATION_DATE
   // Days kept in the rolling window. A date arrives late, so the newest days
   // are always incomplete and keep rising for weeks; rebuilding the whole
   // window each run lets every file self-correct.
@@ -49,11 +47,17 @@
   // Years per 'month' query. 25 x 12 = 300 cells, under the 500-row cap.
   const MONTH_BLOCK = 25;
   const RUN_LOG = 'data/log.json';
-  // A copy of each notifications_* file goes to data/archive/<YYYYMMDD>/ before a
-  // run overwrites it. Git already holds every past version, so this exists to
-  // give a consumer a fixed path to the previous days. 7 days is the limit.
+  // Before a run overwrites the day-diagnostic file, its current contents go to
+  // data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json. Every date is
+  // kept, and nothing is pruned.
+  //
+  // ONLY this file is archived. It is the one worth a series: its newest days
+  // are incomplete and keep rising for weeks, so a past copy shows what the
+  // numbers looked like before the late notifications landed. At 167 KB a day
+  // that costs about 61 MB a year. The other 4 files change slowly or hold a
+  // running total, and git already keeps every past version of them as a delta.
   const ARCHIVE_DIR = 'data/archive';
-  const ARCHIVE_DAYS = 7;
+  const ARCHIVE_FILE = DIAGNOSIS_DAY_FILE;
 
   // Every PowerBI request goes through getCaseNumbers, so counting calls here
   // gives an exact request count per run without touching the client.
@@ -77,45 +81,36 @@
     console.log(`[${mode}] ${entry.seconds}s, ${entry.requests} requests`);
   }
 
-  // Copies the CURRENT contents of `file` into data/archive/<date>/ before the
-  // caller overwrites it, then prunes the archive to the newest ARCHIVE_DAYS
-  // folders. The date comes from the OLD file's own last_refreshed, not from
-  // today: a run that finds no new dashboard refresh must not open a folder
-  // under a date the data does not belong to. Every notification file carries
-  // that stamp, either at the top level (all-time) or on each array element.
+  // Copies the CURRENT contents of `file` into data/archive/ under a dated name,
+  // then writes the new contents. Only ARCHIVE_FILE is archived; every other
+  // file writes straight through.
   //
-  // A missing or unreadable old file is not an error — the first run of a mode
-  // has nothing to archive, and a copy is never worth failing a scrape over.
+  // The date comes from the OLD file's own last_refreshed, not from today: a
+  // run that finds no new dashboard refresh must not label a copy with a date
+  // the data does not belong to. A same-date copy overwrites, so a re-run is
+  // safe.
+  //
+  // A missing or unreadable old file is not an error — the first run has
+  // nothing to archive, and a copy is never worth failing a scrape over.
   function writeWithArchive(file, contents) {
     try {
-      if (fs.existsSync(file)) {
+      if (file === ARCHIVE_FILE && fs.existsSync(file)) {
         const old = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const stamp = Array.isArray(old) ? old[0]?.last_refreshed : old?.last_refreshed;
-        const date = stamp ? String(stamp).slice(0, 10).replace(/-/g, '') : null;
+        const date = old[0]?.last_refreshed?.slice(0, 10).replace(/-/g, '');
         if (date) {
-          const dir = ARCHIVE_DIR + '/' + date;
-          fs.mkdirSync(dir, { recursive: true });
-          fs.copyFileSync(file, dir + '/' + file.split('/').pop());
+          fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+          fs.copyFileSync(file, ARCHIVE_DIR + '/' + date + '_' + file.split('/').pop());
         }
       }
     } catch (e) { console.log('Archive skipped for ' + file + ': ' + e.message); }
 
     fs.writeFileSync(file, contents);
-    pruneArchive();
   }
 
-  // Keeps the newest ARCHIVE_DAYS date folders and deletes the rest. The names
-  // are YYYYMMDD, so a plain string sort is a date sort.
-  function pruneArchive() {
-    if (!fs.existsSync(ARCHIVE_DIR)) return;
-    const dates = fs.readdirSync(ARCHIVE_DIR).filter(d => /^\d{8}$/.test(d)).sort();
-    for (const d of dates.slice(0, Math.max(0, dates.length - ARCHIVE_DAYS))) {
-      fs.rmSync(ARCHIVE_DIR + '/' + d, { recursive: true, force: true });
-    }
-  }
 
-// Writes `outFile`: an ARRAY of day objects, each holding that day's OWN
-// per-state counts, on the date column that `mode` selects.
+
+// Writes DIAGNOSIS_DAY_FILE: an ARRAY of day objects, each holding that day's
+// OWN per-state counts, on DIAGNOSIS_DATE.
 //
 // ONE query per disease covers the whole window, not one per disease-day: the
 // query groups on the date column (primary) with STATE secondary, so a 60-day
@@ -133,9 +128,7 @@
 // later, so those counts keep rising. Rebuilding the whole window each run is
 // what corrects them.
 //
-// `mode` is 'day' (DIAGNOSIS_DATE) or 'reported' (NOTIFICATION_DATE); `outFile`
-// is the file that mode writes.
-async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed, mode, outFile) {
+async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed) {
   const from = daysToFetch[0];
   const to = daysToFetch[daysToFetch.length - 1];
   const range = {
@@ -160,8 +153,8 @@ async function buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRef
     last_refreshed: lastRefreshed, date,
     columns: ['disease', ...STATE_CODES], rows: byDay[date]
   }));
-  writeWithArchive(outFile, JSON.stringify(dayFile));
-  console.log('Wrote ' + dayFile.length + ' days to ' + outFile);
+  writeWithArchive(DIAGNOSIS_DAY_FILE, JSON.stringify(dayFile));
+  console.log('Wrote ' + dayFile.length + ' days to ' + DIAGNOSIS_DAY_FILE);
 }
 
 // Turns the CLI's optional third arg into a list of 'YYYYMMDD' days, newest
@@ -399,13 +392,12 @@ async function getDiseaseList(mode, scopeArg) {
     });
     fs.writeFileSync('data/ref_disease_groups.json', JSON.stringify(diseaseGroups, null, 2));
 
-    // 'day'/'reported' modes — see buildDayOutput. Scope defaults to the rolling
-    // DAY_WINDOW ending on reportDate; scopeArg can target one day or a month.
-    if (mode === 'day' || mode === 'reported') {
-      const outFile = mode === 'reported' ? NOTIFICATION_DAY_FILE : DIAGNOSIS_DAY_FILE;
+    // 'day' mode — see buildDayOutput. Scope defaults to the rolling DAY_WINDOW
+    // ending on reportDate; scopeArg can target one day or a month.
+    if (mode === 'day') {
       const daysToFetch = parseDayScope(scopeArg, reportDate);
-      await buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed, mode, outFile);
-      logRun(mode, scopeArg, startedAt, { days: daysToFetch.length, file: outFile });
+      await buildDayOutput(capacityUri, token, diseases, daysToFetch, lastRefreshed);
+      logRun(mode, scopeArg, startedAt, { days: daysToFetch.length, file: DIAGNOSIS_DAY_FILE });
       return;
     }
 
@@ -460,6 +452,6 @@ async function getDiseaseList(mode, scopeArg) {
 }
   // Run the scraper — see the header comment above for the mode/scope table.
   const arg = process.argv[2];
-  const mode = (arg === 'year' || arg === 'month' || arg === 'day' || arg === 'reported') ? arg : 'all-time';
+  const mode = (arg === 'year' || arg === 'month' || arg === 'day') ? arg : 'all-time';
   const scopeArg = process.argv[3];
   getDiseaseList(mode, scopeArg);

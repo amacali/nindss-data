@@ -1,23 +1,27 @@
 # National Notifiable Disease Surveillance System data for Australia #
 Notification-count snapshots from the NINDSS Portal (https://nindss.health.gov.au/pbi-dashboard/).
 
-All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the eight state counts inlined in the fixed order given by `columns`. AUS/national is excluded. The three `notifications_by_*` files wrap those objects in an array, one per period.
+All files use the same flat `columns` + `rows` shape — a `columns` legend followed by one `rows` entry per disease, with the 8 state counts inlined in the fixed order given by `columns`. AUS/national is excluded. The three `notifications_by_*` files wrap those objects in an array, one per period.
 
 Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
 
+**The disease list changes.** The scraper reads it live from the dashboard on every run, so a
+disease can appear or disappear without warning. `Rabies` was dropped by the source on 8 Sep
+2026, taking the row count from 67 to 66. Do not hardcode the list or the count. A past day in
+`data/archive/` shows you what changed.
+
 Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
-### 📁 Five data files, flat in `data/`
+### 📁 Four data files in `data/`
 
 | File | Holds | Keyed by |
 | --- | --- | --- |
 | `notifications_all_time.json` | cumulative totals to date | — (one object) |
 | `notifications_by_day_diagnostic.json` | 60 days, rolling window, by diagnosis date | `date` |
-| `notifications_by_day.json` | 60 days, rolling window, by notification date | `date` |
 | `notifications_by_month.json` | 1,065 months from 1938 | `year` + `month` |
 | `notifications_by_year.json` | 89 years from 1938 | `year` |
 
-The four `by_*` files are an ARRAY of period objects. Each element keeps the same shape, so a consumer can lift one out unchanged:
+The three `by_*` files are an ARRAY of period objects. Each element keeps the same shape, so a consumer can lift one out unchanged:
 
 ```json
 [ { "last_refreshed": "2026-09-05T15:31:23+10:00",
@@ -30,15 +34,15 @@ The four `by_*` files are an ARRAY of period objects. Each element keeps the sam
 
 ### 🗄️ Past days in `data/archive/`
 
-`data/archive/<YYYYMMDD>/` holds a copy of each of the 5 files as it stood before the run that replaced it. The date is the archived file's own `last_refreshed`, not the date it was copied. The newest 7 dates are kept.
-
-Read a past day from a fixed path rather than from git history:
+`data/archive/` keeps a dated copy of `notifications_by_day_diagnostic.json` from every run, and nothing else:
 
 ```
-data/archive/20260907/notifications_by_month.json
+data/archive/20260907_notifications_by_day_diagnostic.json
 ```
 
-The shape is identical to the live file. `data/archive/20260905/` holds 4 files, not 5 — `notifications_by_day_diagnostic.json` did not exist then.
+The prefix is that copy's own `last_refreshed` date. Every date is kept, so you can see how a given day's counts filled in over the following weeks as late notifications landed. The shape is identical to the live file.
+
+The other 3 files are not archived — a full history of all 4 would add over 1 GB a year to this repo. For a past version of those, read git history.
 
 **Counts are each period's OWN total, not a running total.** Do not subtract the prior period. Days sum to months and months to years, verified across 618,544 cells.
 
@@ -102,3 +106,9 @@ JSON_TABLE(doc, '$[*]' COLUMNS (
 - **6 Sep 2026 — one month file per year** `data/month/` now holds one file per year (`<year>_notifications.json`), containing an array of that year's months, instead of 1,065 files named `<YYYYMM>_notifications.json`. Each array element keeps the exact shape the per-month file had, headers included, so the counts are untouched — only the packaging changed. A consumer that opened a `YYYYMM` path must now open the year and pick the month, and a MySQL load needs a `NESTED PATH` (see above).
 
 - **8 Sep 2026 — a rolling 7-day archive** `data/archive/<YYYYMMDD>/` now holds a copy of each `notifications_*` file as it stood before the run that replaced it, so a consumer can read a past day from a fixed path instead of git history. The folder date is the archived file's own `last_refreshed`, not the copy date. The newest 7 dates are kept. Nothing about the live files changed. 20260905 to 20260907 were backfilled from git history, and 20260905 holds 4 files rather than 5, because `notifications_by_day_diagnostic.json` did not exist then.
+
+- **8 Sep 2026 — the source dropped `Rabies`** The disease list fell from 67 rows to 66. Rabies appeared upstream on 5 Sep with 1 QLD case and left 3 days later, so the row is gone from every file, including the full year and month history. Only that row went; the other 66 diseases carried on with their normal daily movement. A consumer that hardcodes 67 diseases, or that expects a fixed row order, breaks here. The list is read live from the dashboard on every run, so treat it as variable. `data/archive/20260907/` holds the last copies that still carry the row.
+
+- **8 Sep 2026 — the archive is flat, dated, and diagnostic-only** `data/archive/<YYYYMMDD>/` becomes `data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json`. That file now keeps every date rather than 7, so you can see how a day's counts filled in over the following weeks. The other 4 files are no longer archived at all — a full history of all 5 costs over 1 GB a year, and git already holds every past version as a delta.
+
+- **8 Sep 2026 — `notifications_by_day.json` is removed** The notification-date series and its `node index.js reported` mode are gone. `notifications_by_day_diagnostic.json`, on diagnosis date, is the only daily file now. **A consumer reading the removed path gets a 404 rather than wrong numbers** — that is deliberate, since the two bases disagree by about 27% over a year and a silent swap would look plausible. The diagnosis basis is the one that reconciles with `notifications_by_month.json` and `notifications_by_year.json`. Past copies stay in git history.

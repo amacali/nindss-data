@@ -21,7 +21,6 @@
   const DATA_FILES = [
     'data/notifications_all_time.json',
     'data/notifications_by_day_diagnostic.json',
-    'data/notifications_by_day.json',
     'data/notifications_by_month.json',
     'data/notifications_by_year.json'
   ];

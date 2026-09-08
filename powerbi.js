@@ -194,25 +194,21 @@
 // block returns at most 300 cells and cannot truncate.
 
 // `dayRange` (optional) is { from, to } as 'YYYY-MM-DD', half-open: from <= d < to.
-// 'day' and 'reported' need it. The filter constrains the date column on the FACT table
+// Only 'day' needs it. The filter constrains the date column on the FACT table
 // rather than the grouping, so a day, a month and a year on the same column
-// always reconcile exactly — verified to 0 difference across all 67 diseases
+// always reconcile exactly — verified to 0 difference across every disease
 // for September 2026, and for year 2025 against its 12 months.
 //
 // 'day' uses DIAGNOSIS_DATE, and it is the basis the year and month files share:
 // the dashboard's own filter reads
 // "Diagnosis Year, Diagnosis Quarter, Diagnosis Month Name", and a diagnosis
 // year query matches data/year/2025_notifications.json to the case (1,171,052).
-// The two columns disagree by 27% over 2025, so mixing them breaks the archive.
-// 'reported' queries NOTIFICATION_DATE into its OWN file for that reason — it
-// reconciles with nothing else here, and a consumer must not sum the two.
 export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear,dayRange) {
 
   // The three queries differ only in which period dimensions are projected and
   // how STATE is bound. Assemble the varying pieces per mode:
   //   'all-time' → Select [STATE, Measure];        Primary [0,1], no Secondary
   //   'day'      → as 'all-time', plus a DIAGNOSIS_DATE range filter
-//   'reported' → as 'day', on NOTIFICATION_DATE
   //   'year'     → Select [STATE, Year, Measure];  Primary [1,2], Secondary [STATE]
   //   'month'    → Select [STATE, Year, Month, M]; Primary [1,2,3], Secondary [STATE]
   const SEL_YEAR = "{\"HierarchyLevel\":{\"Expression\":{\"Hierarchy\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Hierarchy\":\"Diagnosis Year Drill Down\"}},\"Level\":\"Diagnosis Year\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.Diagnosis Year Drill Down.Diagnosis Year\"}";
@@ -226,12 +222,10 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
 
   // Period selects (between STATE and the measure), primary projections, binding,
   // and order-by, per mode.
-  // 'day' groups and filters on DIAGNOSIS_DATE; 'reported' does the same on
-  // NOTIFICATION_DATE. The two modes are identical apart from this column, so
-  // every branch below tests dayMode and reads DATE_COL.
-  const dayMode = mode === 'day' || mode === 'reported';
-  const DATE_COL = mode === 'reported' ? 'NOTIFICATION_DATE' : 'DIAGNOSIS_DATE';
-  const SEL_DATE = "{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT." + DATE_COL + "\"}";
+  // 'day' groups and filters on DIAGNOSIS_DATE, the basis the year and month
+  // files share.
+  const dayMode = mode === 'day';
+  const SEL_DATE = "{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"},\"Name\":\"DELTALOAD_DATAMART NOTIFIABLE_EVENT_FACT.DIAGNOSIS_DATE\"}";
   const periodSelect = mode === 'month' ? SEL_YEAR + "," + SEL_MONTH + ","
                      : mode === 'year'  ? SEL_YEAR + ","
                      : dayMode          ? SEL_DATE + ","
@@ -244,18 +238,18 @@ export async function getCaseNumbers(capacityUri,token,diseaseName,mode,onlyYear
   const binding = flatMode
     ? "{\"Primary\":{\"Groupings\":[{\"Projections\":[0,1]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":1000}}},\"Version\":1}"
     : "{\"Primary\":{\"Groupings\":[{\"Projections\":" + primaryProjections + "}]},\"Secondary\":{\"Groupings\":[{\"Projections\":[0]}]},\"DataReduction\":{\"DataVolume\":4,\"Primary\":{\"Window\":{\"Count\":5000}},\"Secondary\":{\"Top\":{\"Count\":100}}},\"Version\":1}";
-  const ORDER_DATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}}},";
+  const ORDER_DATE = "{\"Direction\":1,\"Expression\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}}},";
   const orderBy = flatMode        ? ORDER_STATE
                 : dayMode         ? ORDER_DATE + ORDER_STATE
                 : ORDER_YEAR + ORDER_STATE;
 
-  // Half-open DATE_COL range for 'day'/'reported'. ComparisonKind: 0 '=', 1 '>',
+  // Half-open DIAGNOSIS_DATE range for 'day'. ComparisonKind: 0 '=', 1 '>',
   // 2 '>=', 3 '<', 4 '<=' — verified against DAX_Year, where the totals for
   // kinds 2 and 4 must equal the sum of their parts. Using 1 as an upper bound
   // (the intuitive but wrong reading) returns plausible garbage, not an error.
   const dayFilter = dayRange
-    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":2,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.from + "T00:00:00'\"}}}}}"
-    + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"" + DATE_COL + "\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
+    ? ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":2,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.from + "T00:00:00'\"}}}}}"
+    + ",{\"Condition\":{\"Comparison\":{\"ComparisonKind\":3,\"Left\":{\"Column\":{\"Expression\":{\"SourceRef\":{\"Source\":\"d1\"}},\"Property\":\"DIAGNOSIS_DATE\"}},\"Right\":{\"Literal\":{\"Value\":\"datetime'" + dayRange.to + "T00:00:00'\"}}}}}"
     : "";
 
   // `onlyYear` is either one year (equality) or [from, to] for a BLOCK of
@@ -325,7 +319,7 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
     }
 
     // Every mode but 'all-time': STATE is on the secondary axis (the per-row X
-    // array); its labels live in SH[0].DM1 under G1 ('year'/'day'/'reported') or G2
+    // array); its labels live in SH[0].DM1 under G1 ('year'/'day') or G2
     // ('month' — projecting Month bumps every later dimension's G-number).
     const stateKey = mode === 'month' ? 'G2' : 'G1';
     const states = ds0.SH[0].DM1.map(v => v[stateKey]);
@@ -373,7 +367,7 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
     } else {
       // 'year'/'day': a single primary dimension — no dictionary/bitmask; the
       // period is stored directly on the row as G0. Only measure sparsity
-      // applies. 'day'/'reported' carry an epoch in ms, keyed out as 'YYYY-MM-DD'.
+      // applies. 'day' carries an epoch in ms, keyed out as 'YYYY-MM-DD'.
       results.forEach(row => {
         const year = dayMode
           ? new Date(row.G0).toISOString().slice(0, 10)
