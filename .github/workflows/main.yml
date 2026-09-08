@@ -5,13 +5,17 @@ on:
   #     - main
   schedule:
     # Times are UTC (GitHub cron has no DST). Anchored to AEDT (UTC+11):
-    # 08:00, 12:00, 16:00 and 20:00 AEDT. During AEST (winter) all shift ~1h
-    # earlier. The dashboard refreshes about once a day, so most of these
-    # windows find nothing new — the refresh guard below skips those in ~2
-    # requests rather than re-running a ~2,000-request scrape.
-    - cron: '0 21 * * *'    # 08:00 AEDT (previous UTC day)
-    - cron: '0 1 * * *'     # 12:00 AEDT
+    # 10:00, 16:00, 17:00 and 20:00 AEDT. During AEST (winter) all shift ~1h
+    # earlier. The dashboard refreshes about once a day at ~15:30, so the
+    # 16:00 slot is the one that catches it; 17:00 is the backup for when
+    # GitHub delays 16:00. Most windows find nothing new — the refresh guard
+    # below skips those in ~2 requests rather than re-running a ~2,000-request
+    # scrape, so an extra slot is nearly free.
+    # GitHub queues the schedule event at low priority, so a slot can start
+    # over an hour late or not fire at all. The guard makes that safe.
+    - cron: '0 23 * * *'    # 10:00 AEDT (previous UTC day)
     - cron: '0 5 * * *'     # 16:00 AEDT
+    - cron: '0 6 * * *'     # 17:00 AEDT (backup for a delayed 16:00)
     - cron: '0 9 * * *'     # 20:00 AEDT
   workflow_dispatch:
     inputs:
