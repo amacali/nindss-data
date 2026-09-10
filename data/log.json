@@ -240,5 +240,39 @@
     "seconds": 50.3,
     "requests": 131,
     "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-09-10T06:45:12.665Z",
+    "seconds": 32.2,
+    "requests": 66,
+    "diseases": 66,
+    "file": "data/notifications_all_time.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-09-10T06:45:45.050Z",
+    "seconds": 27.6,
+    "requests": 66,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
+  },
+  {
+    "mode": "year",
+    "scope": null,
+    "started_at": "2026-09-10T06:46:12.916Z",
+    "seconds": 25.8,
+    "requests": 66,
+    "file": "data/notifications_by_year.json"
+  },
+  {
+    "mode": "month",
+    "scope": null,
+    "started_at": "2026-09-10T06:46:38.969Z",
+    "seconds": 51.9,
+    "requests": 131,
+    "file": "data/notifications_by_month.json"
   }
 ]
