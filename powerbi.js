@@ -48,12 +48,52 @@
     return Number.isNaN(parsed) ? 0 : parsed;
   }
 
+  // A stalled request used to hang until a CI step timeout killed the whole
+  // run. On 11 Sep 2026 a GitHub runner took ~100s per disease and timed out
+  // with 62 of 66 left, while the same query ran in under a second locally.
+  // The host is reachable but slow in bursts, so a retry usually succeeds.
+  // Wraps fetch with the SAME (url, options) signature, so a call site needs
+  // no other change. Every request in this file must go through it.
+  const REQUEST_TIMEOUT_MS = 30000;
+  const MAX_ATTEMPTS = 3;
+
+  async function fetchWithRetry(url, options) {
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // A fresh controller per attempt: an aborted signal stays aborted, so
+      // reusing one would fail every retry instantly.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        lastError = error;
+        const reason = error.name === 'AbortError'
+          ? 'timed out after ' + (REQUEST_TIMEOUT_MS / 1000) + 's'
+          : error.message;
+        if (attempt < MAX_ATTEMPTS) {
+          // Back off 2s then 4s, to let a slow burst pass.
+          const waitMs = 2000 * attempt;
+          console.log('Request ' + reason + ', retry ' + attempt + ' of '
+            + (MAX_ATTEMPTS - 1) + ' in ' + (waitMs / 1000) + 's');
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+        } else {
+          console.log('Request ' + reason + ', gave up after '
+            + MAX_ATTEMPTS + ' attempts');
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError;
+  }
+
 // Fetches the dashboard HTML and decodes the base64 `embedconfig` attribute
 // off <div class="powerbi"> into the PowerBI embed config (report id + token).
   export async function getConfig() {
 
     try {
-      const response = await fetch("https://nindss.health.gov.au/pbi-dashboard/");
+      const response = await fetchWithRetry("https://nindss.health.gov.au/pbi-dashboard/");
       const body = await response.text();
       const $ = cheerio.load(body);
 
@@ -78,7 +118,7 @@
     const embedToken = config.EmbedToken['token'];
 
     try {
-      const response = await fetch(
+      const response = await fetchWithRetry(
         "https://wabi-australia-southeast-redirect.analysis.windows.net/explore/reports/" + reportId + "/modelsAndExploration?preferReadOnlySession=true&skipQueryData=true", {
         "headers": {
           "accept": "application/json, text/plain, */*",
@@ -117,7 +157,7 @@
   export async function getLatestUpdateDate(capacityUri,token) {
 
     try {
-      const response = await fetch(
+      const response = await fetchWithRetry(
         capacityUri + 'query', {
         "headers": {
           "accept": "application/json, text/plain, */*",
@@ -265,7 +305,7 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
 
   try {
     // Fetch data from URL and store the response into a const
-    const response = await fetch(
+    const response = await fetchWithRetry(
       capacityUri + 'query', {
       "headers": {
         "accept": "application/json, text/plain, */*",
