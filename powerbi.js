@@ -48,13 +48,76 @@
     return Number.isNaN(parsed) ? 0 : parsed;
   }
 
+  // A stalled request used to hang until a CI step timeout killed the whole
+  // run. On 11 Sep 2026 a GitHub runner took ~100s per disease and timed out
+  // with 62 of 66 left, while the same query ran in under a second locally.
+  // The host is reachable but slow in bursts, so a retry usually succeeds.
+  //
+  // Returns the PARSED BODY, not the Response. fetch() resolves as soon as the
+  // headers arrive, so a helper that returned the Response would leave the body
+  // read outside the timer — and a host that sends headers fast then stalls
+  // mid-body would hang exactly as before. Reading it here keeps the WHOLE
+  // request inside the timeout.
+  //
+  // Retrying is safe because every request in this file is a read: one GET, and
+  // POSTs whose bodies are all SemanticQueryDataShapeCommand queries.
+  const REQUEST_TIMEOUT_MS = 30000;
+  const MAX_ATTEMPTS = 3;
+
+  // `parse` picks the body reader: 'json' (default) or 'text'.
+  async function fetchWithRetry(url, options = {}, parse = 'json') {
+    let lastError;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // A fresh controller per attempt: an aborted signal stays aborted, so
+      // reusing one would fail every retry instantly.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        // A 4xx/5xx still resolves fetch, so check it here. Retrying a 500 can
+        // work; a 404 or a 401 will not, so give up on those at once.
+        if (!response.ok) {
+          const failure = new Error('HTTP ' + response.status + ' from ' + url);
+          if (response.status < 500 && response.status !== 429) throw failure;
+          lastError = failure;
+          throw Object.assign(failure, { retryable: true });
+        }
+        return parse === 'text' ? await response.text() : await response.json();
+      } catch (error) {
+        lastError = error;
+        const fatal = error instanceof Error
+          && error.message.startsWith('HTTP ')
+          && !error.retryable;
+        const reason = error.name === 'AbortError'
+          ? 'timed out after ' + (REQUEST_TIMEOUT_MS / 1000) + 's'
+          : error.message;
+        if (fatal) {
+          console.log('Request failed: ' + reason + ' — not retryable');
+          throw error;
+        }
+        if (attempt < MAX_ATTEMPTS) {
+          // Back off 2s then 4s, to let a slow burst pass.
+          const waitMs = 2000 * attempt;
+          console.log('Request ' + reason + ', retry ' + attempt + ' of '
+            + (MAX_ATTEMPTS - 1) + ' in ' + (waitMs / 1000) + 's');
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+        } else {
+          console.log('Request ' + reason + ', gave up after '
+            + MAX_ATTEMPTS + ' attempts');
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError;
+  }
+
 // Fetches the dashboard HTML and decodes the base64 `embedconfig` attribute
 // off <div class="powerbi"> into the PowerBI embed config (report id + token).
   export async function getConfig() {
 
     try {
-      const response = await fetch("https://nindss.health.gov.au/pbi-dashboard/");
-      const body = await response.text();
+      const body = await fetchWithRetry("https://nindss.health.gov.au/pbi-dashboard/", {}, 'text');
       const $ = cheerio.load(body);
 
       var decode = '';
@@ -78,7 +141,7 @@
     const embedToken = config.EmbedToken['token'];
 
     try {
-      const response = await fetch(
+      const data = await fetchWithRetry(
         "https://wabi-australia-southeast-redirect.analysis.windows.net/explore/reports/" + reportId + "/modelsAndExploration?preferReadOnlySession=true&skipQueryData=true", {
         "headers": {
           "accept": "application/json, text/plain, */*",
@@ -98,8 +161,6 @@
         "method": "GET"
       });
 
-      // Convert the response into text
-      const data = await response.json();
       return {
         reportId: reportId,
         token: data.exploration.mwcToken,
@@ -117,7 +178,7 @@
   export async function getLatestUpdateDate(capacityUri,token) {
 
     try {
-      const response = await fetch(
+      const data = await fetchWithRetry(
         capacityUri + 'query', {
         "headers": {
           "accept": "application/json, text/plain, */*",
@@ -137,8 +198,6 @@
         "method": "POST"
       });
 
-      // Convert the response into text
-      const data = await response.json();
       const epoch = data.results[0].result.data.dsr.DS[0].PH[0].DM0[0].M0;
       // The epoch already carries the wall-clock time the dashboard prints in
       // its "Last Refreshed On" card, so read it as GMT to recover those
@@ -265,7 +324,7 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
 
   try {
     // Fetch data from URL and store the response into a const
-    const response = await fetch(
+    const data = await fetchWithRetry(
       capacityUri + 'query', {
       "headers": {
         "accept": "application/json, text/plain, */*",
@@ -285,8 +344,6 @@ const body = "{\"version\":\"1.0.0\",\"queries\":[{\"Query\":{\"Commands\":[{\"S
       "method": "POST"
     });
 
-    // Convert the response into text
-    const data = await response.json();
     const ds0 = data.results[0].result.data.dsr.DS[0];
     const results = ds0.PH[0].DM0;
     // Measure value dictionary for the secondary axis. The X header names it
