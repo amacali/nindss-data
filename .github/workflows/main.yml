@@ -5,18 +5,17 @@ on:
   #     - main
   schedule:
     # Times are UTC (GitHub cron has no DST). Anchored to AEDT (UTC+11):
-    # 10:00, 15:00, 16:00, 18:00 and 22:00 AEDT. During AEST (winter) all
-    # shift ~1h earlier. The dashboard refreshes about once a day at ~15:30,
-    # so the 16:00 slot is the one that catches it; 18:00 is the backup for
-    # when GitHub delays 16:00. Most windows find nothing new — the refresh
-    # guard below skips those in ~2 requests rather than re-running a
-    # ~2,000-request scrape, so an extra slot is nearly free.
+    # 15:30, 16:30 and 20:30 AEDT. During AEST (winter) all shift ~1h
+    # earlier. The dashboard refreshes about once a day at ~15:30, so 15:30
+    # fires at the refresh itself and often finds nothing; 16:30 is the slot
+    # that reliably catches it, and 20:30 is the backup. Most windows find
+    # nothing new — the refresh guard below skips those in ~2 requests
+    # rather than re-running a ~330-request scrape, so a spare slot is cheap.
     # GitHub queues the schedule event at low priority, so a slot can start
     # over an hour late or not fire at all. The guard makes that safe.
-    - cron: '0 4 * * *'     # 15:00 AEDT
-    - cron: '0 5 * * *'     # 16:00 AEDT
-    - cron: '0 7 * * *'     # 18:00 AEDT (backup for a delayed 16:00)
-    - cron: '0 11 * * *'    # 22:00 AEDT
+    - cron: '30 4 * * *'    # 15:30 AEDT
+    - cron: '30 5 * * *'    # 16:30 AEDT
+    - cron: '30 9 * * *'    # 20:30 AEDT (backup for a delayed 16:30)
   workflow_dispatch:
     inputs:
       mode:
@@ -31,7 +30,12 @@ on:
 
 jobs:
   archive:
-    timeout-minutes: 20
+    # The runner's speed against the PowerBI host varies by a factor of 100.
+    # A local run of all 4 modes takes ~70s, and a fast runner takes ~135s,
+    # but on 11 Sep 2026 a runner needed ~100s for ONE of the 66 diseases.
+    # No request in powerbi.js sets a timeout or retries, so a stalled
+    # request waits until a timeout here kills the step.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
@@ -64,8 +68,8 @@ jobs:
           echo "stale=false" >> "$GITHUB_OUTPUT"
         fi
     - name: Run script
-      # Scheduled runs pass no input → run all five modes, ~113s and 400
-      # requests in total. Manual dispatch runs only the selected mode.
+      # Scheduled runs pass no input → run all 4 modes, ~330 requests in
+      # total. Manual dispatch runs only the selected mode.
       #
       # ORDER MATTERS: 'year' writes data/ref_disease_year_map.json, and
       # 'month' reads it to skip the 25-year blocks a disease has no cases in.
@@ -81,7 +85,10 @@ jobs:
           node index.js year     # writes ref_disease_year_map.json
           node index.js month    # reads it — must follow 'year'
         fi
-      timeout-minutes: 15
+      # Raised from 15 after a slow runner timed out with 62 of 66 diseases
+      # left. A healthy run finishes well inside this; the limit only stops a
+      # run that cannot finish, so it must not be removed.
+      timeout-minutes: 40
     - name: Push data
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
