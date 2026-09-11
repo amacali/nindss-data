@@ -210,8 +210,8 @@
   {
     "mode": "all-time",
     "scope": null,
-    "started_at": "2026-09-11T07:52:16.496Z",
-    "seconds": 17.3,
+    "started_at": "2026-09-09T06:29:36.941Z",
+    "seconds": 152.2,
     "requests": 66,
     "diseases": 66,
     "file": "data/notifications_all_time.json"
@@ -219,8 +219,8 @@
   {
     "mode": "day",
     "scope": null,
-    "started_at": "2026-09-11T07:52:38.363Z",
-    "seconds": 14.8,
+    "started_at": "2026-09-09T06:32:09.345Z",
+    "seconds": 26.1,
     "requests": 66,
     "days": 60,
     "file": "data/notifications_by_day_diagnostic.json"
@@ -228,17 +228,60 @@
   {
     "mode": "year",
     "scope": null,
-    "started_at": "2026-09-11T07:52:56.565Z",
-    "seconds": 12.6,
+    "started_at": "2026-09-09T06:32:35.636Z",
+    "seconds": 25.7,
     "requests": 66,
     "file": "data/notifications_by_year.json"
   },
   {
     "mode": "month",
     "scope": null,
-    "started_at": "2026-09-11T07:53:12.722Z",
-    "seconds": 26.4,
+    "started_at": "2026-09-09T06:33:01.495Z",
+    "seconds": 50.3,
     "requests": 131,
     "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-09-10T06:45:12.665Z",
+    "seconds": 32.2,
+    "requests": 66,
+    "diseases": 66,
+    "file": "data/notifications_all_time.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-09-10T06:45:45.050Z",
+    "seconds": 27.6,
+    "requests": 66,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
+  },
+  {
+    "mode": "year",
+    "scope": null,
+    "started_at": "2026-09-10T06:46:12.916Z",
+    "seconds": 25.8,
+    "requests": 66,
+    "file": "data/notifications_by_year.json"
+  },
+  {
+    "mode": "month",
+    "scope": null,
+    "started_at": "2026-09-10T06:46:38.969Z",
+    "seconds": 51.9,
+    "requests": 131,
+    "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-09-11T08:13:22.956Z",
+    "seconds": 34,
+    "requests": 66,
+    "diseases": 66,
+    "file": "data/notifications_all_time.json"
   }
 ]
