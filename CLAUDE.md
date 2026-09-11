@@ -28,7 +28,16 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   1. Values arrive as **formatted display strings**, quoted and comma-grouped: `"'1'"`, `"'7,208'"`. A true zero arrives as the integer `0` instead. Miss the comma and `parseInt` silently truncates 7,208 to 7.
   2. On the **secondary axis** (`year`/`month`, the per-row `X` arrays) the value is additionally **dictionary-encoded**: `M0` is an INDEX into one of `ds0.ValueDicts`, not the value. Which dict varies by mode — `D0` for `year`, `D2` for `month`, since `D0`/`D1` there hold the year/month dimensions — so `parseMeasure` reads the name off the `X` header's `DN` field rather than hardcoding it. Read as a count, an index gives believable garbage: Measles 2019 decoded as ACT 64/NSW 85/NT 28 instead of 2/62/31. The primary axis (`all-time`) returns literals, so no dict is passed there.
 
-  **Every request is bounded.** `fetchWithRetry` wraps `fetch` with the same `(url, options)` signature, so no call site carries its own handling — all 4 go through it. It aborts a request at 30s and retries twice, backing off 2s then 4s. Before it, a stalled request waited forever: a run on 11 Sep 2026 spent ~100s on ONE disease and died on the CI step timeout with 62 of 66 left. Each attempt builds a NEW `AbortController`, because an aborted signal stays aborted and a reused one fails every retry at once. After 3 attempts it throws, and the build function in `index.js` turns that into a named `query failed for <disease>` error — a give-up fails the run rather than writing a short file.
+  **Every request is bounded.** `fetchWithRetry` is the only way this file reaches the network, and all 4 call sites go through it. It aborts at 30s and makes 3 attempts, backing off 2s then 4s. Before it, a stalled request waited forever: a run on 11 Sep 2026 spent ~100s on ONE disease and died on the CI step timeout with 62 of 66 left.
+
+  It returns the PARSED BODY, not the `Response` — `parse` selects `'json'` (default) or `'text'`. That shape is the point, not a convenience: `fetch` resolves as soon as the HEADERS arrive, so returning the `Response` would leave the body read outside the timer, and a host that answers fast then stalls mid-body would hang exactly as before.
+
+  Three more details that are easy to get wrong:
+  - Each attempt builds a NEW `AbortController`. An aborted signal stays aborted, so one reused controller fails every retry instantly — the retry would look like it ran.
+  - A 4xx does not retry, because it will never succeed; a 5xx and a 429 do. `fetch` resolves a 4xx/5xx normally, so the status is checked here rather than at the call site.
+  - Retrying is only safe because every request is a read: one GET, and POSTs whose bodies are all `SemanticQueryDataShapeCommand` queries.
+
+  After 3 attempts it throws, and the build function in `index.js` turns that into a named `query failed for <disease>` error — a give-up fails the run rather than writing a file short by one disease.
 
   1. `getConfig()` — fetches the dashboard HTML page and extracts the `embedconfig` attribute from the `div.powerbi` element, base64-decoding it to get a report ID and embed token.
   2. `getToken()` — exchanges the embed token for a short-lived MWC token and capacity URI via PowerBI's `modelsAndExploration` endpoint.
