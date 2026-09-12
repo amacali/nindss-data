@@ -394,5 +394,14 @@
     "requests": 67,
     "diseases": 67,
     "file": "data/notifications_all_time.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-09-12T07:48:34.538Z",
+    "seconds": 31.4,
+    "requests": 67,
+    "diseases": 67,
+    "file": "data/notifications_all_time.json"
   }
 ]
