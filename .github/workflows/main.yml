@@ -4,18 +4,24 @@ on:
   #   branches:
   #     - main
   schedule:
-    # Times are UTC (GitHub cron has no DST). Anchored to AEDT (UTC+11):
-    # 15:30, 16:30 and 20:30 AEDT. During AEST (winter) all shift ~1h
-    # earlier. The dashboard refreshes about once a day at ~15:30, so 15:30
-    # fires at the refresh itself and often finds nothing; 16:30 is the slot
-    # that reliably catches it, and 20:30 is the backup. Most windows find
-    # nothing new — the refresh guard below skips those in ~2 requests
-    # rather than re-running a ~330-request scrape, so a spare slot is cheap.
-    # GitHub queues the schedule event at low priority, so a slot can start
-    # over an hour late or not fire at all. The guard makes that safe.
-    - cron: '30 4 * * *'    # 15:30 AEDT
-    - cron: '30 5 * * *'    # 16:30 AEDT
-    - cron: '30 9 * * *'    # 20:30 AEDT (backup for a delayed 16:30)
+    # Times are UTC. GitHub cron has NO DST, so these are anchored to ONE
+    # offset and drift by an hour when Melbourne switches. They are set for
+    # AEST (UTC+10), which runs to 4 Oct 2026 — SHIFT EACH SLOT 1 HOUR
+    # EARLIER IN UTC on that date, or every time reads an hour late.
+    #
+    # The dashboard refreshes about once a day at ~15:30 local, so 16:30 is
+    # the slot that catches it and 20:30 is the backup. 15:30 fires at the
+    # refresh itself: when the anchor was wrong it fired at 15:30:00 against
+    # a refresh stamped 15:30:47, and lost the race by 47 seconds.
+    #
+    # Most windows find nothing new — the refresh guard below skips those in
+    # ~2 requests rather than re-running a ~330-request scrape, so a spare
+    # slot is cheap. GitHub queues the schedule event at low priority, so a
+    # slot can start over an hour late or not fire at all: both morning
+    # slots were dropped on 12 Sep 2026. The guard makes that safe.
+    - cron: '30 5 * * *'    # 15:30 AEST
+    - cron: '30 6 * * *'    # 16:30 AEST
+    - cron: '30 10 * * *'   # 20:30 AEST (backup for a delayed 16:30)
   workflow_dispatch:
     inputs:
       mode:
