@@ -9,10 +9,10 @@ Scrapes daily notifiable-disease notification snapshots for Australia from the N
 ## Commands
 
 - Install dependencies: `npm install`
-- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~17-45s, 66 requests)
-- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~26-38s, 66 requests
-- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~11-31s, 66 requests
-- Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~28-70s, 131 requests
+- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~17-45s, 67 requests)
+- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~12-38s, 67 requests
+- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~11-31s, 67 requests
+- Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~26-70s, 132 requests
 - There are no tests, lint, or build steps configured (`npm test` is a stub that always fails).
 - README.md (the data-consumer-facing schema doc) is not auto-checked against the code and can drift stale — verify its file paths/shapes against `data/` and this file before trusting it.
 
@@ -22,7 +22,7 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
 
 - `powerbi.js` — the shared DAX query client, with no CLI entry point of its own. Exports `STATE_CODES`/`MONTH_NAMES` plus:
 
-  **The measure (version 3.0).** Every query selects `Count_Notification`, not `Count_Notification_forgraph`. The `_forgraph` variant is what the dashboard visuals use, and it applies the `<5` mask — it reports a suppressed cell as a plain `0`, indistinguishable from a true zero. `Count_Notification` returns the real value. Confirmed against the dashboard on the Measles cells this repo already knew were masked (2019 ACT/SA/TAS, 2020 VIC/WA), and on Rabies 2026 QLD. The source REMOVED Rabies from its disease list on 8 Sep 2026, so that second cell can no longer be re-checked live.
+  **The measure (version 3.0).** Every query selects `Count_Notification`, not `Count_Notification_forgraph`. The `_forgraph` variant is what the dashboard visuals use, and it applies the `<5` mask — it reports a suppressed cell as a plain `0`, indistinguishable from a true zero. `Count_Notification` returns the real value. Confirmed against the dashboard on the Measles cells this repo already knew were masked (2019 ACT/SA/TAS, 2020 VIC/WA), and on Rabies 2026. The source removed Rabies on 8 Sep 2026 and restored it on 13 Sep, and the count moved from QLD 1 to VIC 1 across that gap — so re-check the cell against the CURRENT state rather than the one recorded here.
 
   **Two encodings, both of which produce plausible wrong numbers if mishandled** — `parseMeasure` in `powerbi.js` handles both, and every read of a measure value must go through it:
   1. Values arrive as **formatted display strings**, quoted and comma-grouped: `"'1'"`, `"'7,208'"`. A true zero arrives as the integer `0` instead. Miss the comma and `parseInt` silently truncates 7,208 to 7.
@@ -43,12 +43,14 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   2. `getToken()` — exchanges the embed token for a short-lived MWC token and capacity URI via PowerBI's `modelsAndExploration` endpoint.
   3. `getLatestUpdateDate()` — queries the `DataRefreshAEST` table (the same source backing the dashboard's "Last refreshed on" card) and returns both `reportDate` (`YYYYMMDD`, used for the filename/grouping key) and `lastRefreshed` (full AEST/AEDT timestamp, same underlying value with time preserved).
   4. `getCaseNumbers(..., mode)` — queries `NOTIFIABLE_EVENT_FACT` joined with `LOCATION_DIM`/`DISEASE_DIM`/`CASE_DIM` for per-state notification counts for one disease (restricted to Confirmed/Probable cases and excluding the `Hepatitis C (<24 months)` and `Unknown` disease groups). `mode` drives the query granularity AND return shape: `all-time` → `{ <state>: count }`; `year` → `{ <year>: { <state>: count } }`; `month` → `{ <year>: { <month>: { <state>: count } } }`. Each mode is queried at its own granularity, never derived from a finer one. This is the only query path: `all-time` and both `index.js` build functions come through it. An optional 5th arg `onlyYear` restricts a `month` query to one `DAX_Year` — needed because PowerBI truncates a result set at 500 year-month cells, which silently drops everything past ~41 years.
-  **The disease list is not stable.** `getDiseaseList` reads it live from
-  `DISEASE_DIM` on every run, so the row count follows the source. It fell from
-  67 to 66 on 8 Sep 2026 when the source dropped `Rabies`, which held a real
-  count (QLD 1). A disappearance is silent: no error, just one row fewer in
-  every file. `data/archive/` is how you find one — compare the current
-  `notifications_all_time.json` against a past day's copy.
+  **The disease list is not stable, and it moves BOTH ways.** `getDiseaseList`
+  reads it live from `DISEASE_DIM` on every run, so the row count follows the
+  source. It fell from 67 to 66 on 8 Sep 2026 when the source dropped `Rabies`,
+  then returned to 67 on 13 Sep when `Rabies` came back — and came back with a
+  DIFFERENT state, VIC 1 rather than the QLD 1 it held before. Neither event
+  raises an error: one row more or fewer in every file, and a count that moved
+  between states with nothing to mark it. `data/archive/` is how you find one —
+  compare the current `notifications_all_time.json` against a past day's copy.
 
   5. `data/ref_disease_year_map.json` — written by a separate reference pass, not by the scrape modes. Maps each disease to the exact list of years it has cases in, plus a repo-wide `floor_year`. `buildMonthOutput` uses it to skip a 25-year block a disease has no years in, which cuts a full rebuild from 335 requests to 131. A missing map is safe — every block then falls back to a live query.
 
@@ -64,10 +66,10 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
 
   | Mode | Requests | Seconds (measured range) |
   | --- | --- | --- |
-  | `all-time` | 66 | 17-45 |
-  | `year` (full history) | 66 | 26-38 |
-  | `day` (60-day window) | 66 | 11-31 |
-  | `month` (full history) | 131 | 28-70 |
+  | `all-time` | 67 | 17-45 |
+  | `year` (full history) | 67 | 12-38 |
+  | `day` (60-day window) | 67 | 11-31 |
+  | `month` (full history) | 132 | 26-70 |
 
   - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost. It ALSO rewrites `ref_disease_year_map.json` from the years the query returned, as a free by-product. **`year` must therefore run before `month`**, which reads that map; the CI workflow orders them accordingly. `floor_year` comes from the query data, never from the previous map — reading it back would pin the floor forever and hide any earlier year the source later exposes.
   - `buildDayOutput` — one query per disease covers the WHOLE window, grouping on `DIAGNOSIS_DATE` (primary) with STATE secondary. The date arrives as `G0`, the same single-primary-dimension shape `year` uses. Keep the window under 500 days. One row is one day with cases, so the 500-row cap bites at 500 days, NOT at 365 — measured 6 Sep 2026: 249 and 365 days returned every row, while 614, 730, 1096 and 2441 days all returned exactly 500 and dropped the NEWEST data with no error.
@@ -75,7 +77,7 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
 
   **The 500-row cap is the constraint behind all of this.** It applies whenever a SECONDARY axis is present, and `Window.Count` does NOT raise it — 500, 1000, 5000 and 20000 all return exactly 500 rows. It is SILENT: three different diseases returned identical spans ending at the same date, which only looked wrong because they were compared. Any query returning exactly 500 rows must be treated as truncated.
 
-  Dropping the secondary axis DOES lift the cap (13,379 rows returned), but then `Count_Notification` returns 0 under a date grouping, and the `_forgraph` measure that does work re-applies the <5 mask — verified: Measles 2019 ACT (true value 2) and Rabies 2026 QLD (true value 1, before the source dropped Rabies) both came back 0. So per-state counts and a long history cannot be had in one query. This is why `day` is windowed and `month` is blocked.
+  Dropping the secondary axis DOES lift the cap (13,379 rows returned), but then `Count_Notification` returns 0 under a date grouping, and the `_forgraph` measure that does work re-applies the <5 mask — verified: Measles 2019 ACT (true value 2) and Rabies 2026 (true value 1) both came back 0. So per-state counts and a long history cannot be had in one query. This is why `day` is windowed and `month` is blocked.
 
 All PowerBI requests are raw `fetch` calls with hand-built DAX query JSON bodies (`SemanticQueryDataShapeCommand`) sent as strings — there is no query builder abstraction. If PowerBI changes its dataset/report IDs or query shape, these request bodies (`DatasetId`, `ReportId`, `VisualId`, column/entity names) are what break and need updating.
 
@@ -117,6 +119,6 @@ Days sum to months and months to years, verified to 0 difference across 618,544 
 
 **The cron times need a change twice a year.** GitHub cron has no DST, so the UTC values are anchored to ONE offset. They are set for AEST (UTC+10), which runs to 4 Oct 2026; shift each slot 1 hour earlier in UTC on that date. The cost of the wrong anchor is not cosmetic: while it was set to AEDT the 15:30 slot fired at 15:30:00 against a refresh stamped 15:30:47, losing the race by 47 seconds.
 
-GitHub queues the `schedule` event at low priority — measured starts ran 5 minutes to over 2 hours late, and some slots never fired at all, including both morning slots on 12 Sep 2026 — so no slot is guaranteed. The guard makes that safe: a late run still finds the new stamp, and a window with nothing new costs ~2 requests instead of ~330. A scheduled run that does proceed runs `all-time`, `day`, `year` and `month` in turn. The manual dispatch exposes a `mode` choice input (`all-time`/`day`/`year`/`month`) forwarded to `node index.js`, and always skips the guard — so a re-scrape can be forced. Every mode runs with no scope arg, so `year`/`month` only ever refresh the current period and `day` only its rolling 60-day window, never a full backfill.
+GitHub queues the `schedule` event at low priority, and this is the LARGEST operational risk in the pipeline. Measured starts ran 5 minutes to over 3 hours late, and slots are dropped outright: both morning slots on 12 Sep 2026, and ALL THREE on 13 Sep, which left `main` a full day behind until a local run filled it. The 2 runs that did fire on 12 Sep started 179 and 190 minutes late, and both then SKIPPED — a slot delayed past the next one finds the stamp already handled and does nothing. Cutting from 5 slots to 3 removed the redundancy that used to absorb this. Check `data/log.json` against the dashboard rather than assuming the cron kept up. The guard bounds the COST of a wasted window — nothing new costs ~2 requests instead of ~330 — but it cannot recover a slot that never fired. Only a manual dispatch or a local run fills that gap. A scheduled run that does proceed runs `all-time`, `day`, `year` and `month` in turn. The manual dispatch exposes a `mode` choice input (`all-time`/`day`/`year`/`month`) forwarded to `node index.js`, and always skips the guard — so a re-scrape can be forced. Every mode runs with no scope arg, so `year`/`month` only ever refresh the current period and `day` only its rolling 60-day window, never a full backfill.
 
 The runner's speed against the PowerBI host is not stable. On 11 Sep 2026 a scheduled run needed ~100 seconds for ONE disease and hit the 15-minute step timeout with 62 of 66 left; a manual dispatch 40 minutes later finished `all-time` in 34s on the same runner type. The same query runs in 17s locally. Two changes cover this: `fetchWithRetry` in `powerbi.js` bounds each request (see Architecture), and the workflow timeouts are now 45 minutes on the job and 40 on the script step.
