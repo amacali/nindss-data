@@ -22,7 +22,6 @@ on:
     # cannot recover a slot that never fires — only a manual dispatch or a
     # local run fills that gap.
     - cron: '0 6 * * *'     # 16:00 AEST
-    - cron: '0 10 * * *'    # 20:00 AEST (backup for a delayed 16:00)
   workflow_dispatch:
     inputs:
       mode:
