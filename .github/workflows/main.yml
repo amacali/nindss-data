@@ -10,9 +10,10 @@ on:
     # EARLIER IN UTC on that date, or every time reads an hour late.
     #
     # The dashboard refreshes about once a day at ~15:30 local, so 16:00 is
-    # the slot that catches it and 20:00 is the backup. Do not add a slot at
-    # the refresh time itself: an earlier 15:30 slot fired at 15:30:00
-    # against a refresh stamped 15:30:47, and lost the race by 47 seconds.
+    # the slot that catches it and 08:00 the next morning is the catch-up for
+    # a 16:00 slot that GitHub drops. Do not add a slot at the refresh time
+    # itself: an earlier 15:30 slot fired at 15:30:00 against a refresh
+    # stamped 15:30:47, and lost the race by 47 seconds.
     #
     # Most windows find nothing new — the refresh guard below skips those in
     # ~2 requests rather than re-running a ~330-request scrape. GitHub queues
@@ -21,6 +22,7 @@ on:
     # and all 3 on 13 Sep. The guard makes a wasted window cheap, but it
     # cannot recover a slot that never fires — only a manual dispatch or a
     # local run fills that gap.
+    - cron: '0 22 * * *'    # 08:00 AEST (next day)
     - cron: '0 6 * * *'     # 16:00 AEST
   workflow_dispatch:
     inputs:
