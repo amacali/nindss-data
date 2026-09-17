@@ -11,8 +11,8 @@ on:
     #
     # THE REFRESH TIME MOVED. The dashboard refreshed at ~15:30 local daily
     # to 15 Sep 2026, then shifted to ~05:31 — measured 17 Sep 2026. So 08:00
-    # is now the slot that catches it and 16:00 is the backup. Check the
-    # current stamp with `node refresh-check.js` before you move either.
+    # is now the slot that catches it and the other 3 are backups. Check the
+    # current stamp with `node refresh-check.js` before you move a slot.
     #
     # Do not put a slot on the refresh time itself: a 15:30 slot fired at
     # 15:30:00 against a refresh stamped 15:30:47, and lost by 47 seconds.
@@ -24,7 +24,7 @@ on:
     # and all 3 on 13 Sep. The guard makes a wasted window cheap, but it
     # cannot recover a slot that never fires — only a manual dispatch or a
     # local run fills that gap.
-    - cron: '0 22 * * *'    # 08:00 AEST next day — catches the ~05:31 refresh
+    - cron: '0 22,4,10,16 * * *'    # every 6h: 08:00, 14:00, 20:00, 02:00 AEST
   workflow_dispatch:
     inputs:
       mode:
@@ -45,7 +45,10 @@ jobs:
     # No request in powerbi.js sets a timeout or retries, so a stalled
     # request waits until a timeout here kills the step.
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. That label migrates to Ubuntu 26 over
+    # 19 Oct to 19 Nov 2026, which moves the image under a scheduled run
+    # with nobody watching. Pin forward instead, and meet the change here.
+    runs-on: ubuntu-26.04
     steps:
     # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
     # the "Node.js 20 is deprecated … forced to run on Node.js 24" runner warning

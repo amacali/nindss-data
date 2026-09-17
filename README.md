@@ -6,9 +6,14 @@ All files use the same flat `columns` + `rows` shape — a `columns` legend foll
 Counts are unmasked. The NINDSS dashboard hides any cell below 5 and shows `n.p`, but the scraper reads the underlying measure that keeps those values, so a count of 1 or 2 appears here as 1 or 2 rather than 0.
 
 **The disease list changes.** The scraper reads it live from the dashboard on every run, so a
-disease can appear or disappear without warning. `Rabies` was dropped by the source on 8 Sep
-2026, taking the row count from 67 to 66. Do not hardcode the list or the count. A past day in
-`data/archive/` shows you what changed.
+disease can appear or disappear without warning. `Rabies` has moved 3 times: dropped by the source on
+8 Sep 2026 (67 rows to 66), restored on 13 Sep, then dropped again by 17 Sep. The count stands at
+66. Do not hardcode the list or the count. A past day in `data/archive/` shows you what changed.
+
+**The 1840 floor comes from one bad source row.** A single Chlamydial infection case is dated
+Dec 1840, VIC. It is a source error — Chlamydia was not notifiable then, and VIC was not a colony
+until 1851 — but the scraper reports what the source holds. It adds 97 empty years to the month and
+year files. Treat any pre-1938 year as suspect.
 
 Each file is still queried at its own granularity. Read the granularity you need from its own file rather than summing a finer one — the totals are close but need not agree exactly, because the dashboard revises past counts and a file is only as current as its own `last_refreshed`.
 
@@ -18,8 +23,8 @@ Each file is still queried at its own granularity. Read the granularity you need
 | --- | --- | --- |
 | `notifications_all_time.json` | cumulative totals to date | — (one object) |
 | `notifications_by_day_diagnostic.json` | 60 days, rolling window, by diagnosis date | `date` |
-| `notifications_by_month.json` | 1,065 months from 1938 | `year` + `month` |
-| `notifications_by_year.json` | 89 years from 1938 | `year` |
+| `notifications_by_month.json` | 2,241 months from 1840 | `year` + `month` |
+| `notifications_by_year.json` | 187 years from 1840 | `year` |
 
 The three `by_*` files are an ARRAY of period objects. Each element keeps the same shape, so a consumer can lift one out unchanged:
 
