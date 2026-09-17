@@ -9,9 +9,9 @@ Scrapes daily notifiable-disease notification snapshots for Australia from the N
 ## Commands
 
 - Install dependencies: `npm install`
-- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~17-45s, 67 requests)
-- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~12-38s, 67 requests
-- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~11-31s, 67 requests
+- Run the daily scraper (all-time totals): `node index.js` or `node index.js all-time` (writes `data/notifications_all_time.json`, ~14-45s, 66 requests)
+- Run the per-year breakdown: `node index.js year [Y|all]` — writes `data/notifications_by_year.json`, ~12-38s, 66 requests
+- Run the daily history by diagnosis date: `node index.js day` (rolling 60 days) — writes `data/notifications_by_day_diagnostic.json`, ~11-31s, 66 requests
 - Run the monthly history: `node index.js month [YM|Y|all]` — writes `data/notifications_by_month.json`, ~26-70s, 132 requests
 - There are no tests, lint, or build steps configured (`npm test` is a stub that always fails).
 - README.md (the data-consumer-facing schema doc) is not auto-checked against the code and can drift stale — verify its file paths/shapes against `data/` and this file before trusting it.
@@ -45,9 +45,9 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
   4. `getCaseNumbers(..., mode)` — queries `NOTIFIABLE_EVENT_FACT` joined with `LOCATION_DIM`/`DISEASE_DIM`/`CASE_DIM` for per-state notification counts for one disease (restricted to Confirmed/Probable cases and excluding the `Hepatitis C (<24 months)` and `Unknown` disease groups). `mode` drives the query granularity AND return shape: `all-time` → `{ <state>: count }`; `year` → `{ <year>: { <state>: count } }`; `month` → `{ <year>: { <month>: { <state>: count } } }`. Each mode is queried at its own granularity, never derived from a finer one. This is the only query path: `all-time` and both `index.js` build functions come through it. An optional 5th arg `onlyYear` restricts a `month` query to one `DAX_Year` — needed because PowerBI truncates a result set at 500 year-month cells, which silently drops everything past ~41 years.
   **The disease list is not stable, and it moves BOTH ways.** `getDiseaseList`
   reads it live from `DISEASE_DIM` on every run, so the row count follows the
-  source. It fell from 67 to 66 on 8 Sep 2026 when the source dropped `Rabies`,
-  then returned to 67 on 13 Sep when `Rabies` came back — and came back with a
-  DIFFERENT state, VIC 1 rather than the QLD 1 it held before. Neither event
+  source. `Rabies` has moved 3 times: dropped 8 Sep 2026 (67 to 66), back on
+  13 Sep (66 to 67) with a DIFFERENT state (VIC 1, not the QLD 1 it held
+  before), and dropped again by 17 Sep (67 to 66, where it stands). Neither event
   raises an error: one row more or fewer in every file, and a count that moved
   between states with nothing to mark it. `data/archive/` is how you find one —
   compare the current `notifications_all_time.json` against a past day's copy.
@@ -66,10 +66,10 @@ The scraper is split across three files, all reverse-engineering the PowerBI emb
 
   | Mode | Requests | Seconds (measured range) |
   | --- | --- | --- |
-  | `all-time` | 67 | 17-45 |
-  | `year` (full history) | 67 | 12-38 |
-  | `day` (60-day window) | 67 | 11-31 |
-  | `month` (full history) | 132 | 26-70 |
+  | `all-time` | 66 | 14-45 |
+  | `year` (full history) | 66 | 12-38 |
+  | `day` (60-day window) | 66 | 11-31 |
+  | `month` (full history) | 134 | 26-70 |
 
   - `buildYearOutput` — one `getCaseNumbers(..., 'year')` per disease returns EVERY year at once, so scope only picks the span written, never the cost. It ALSO rewrites `ref_disease_year_map.json` from the years the query returned, as a free by-product. **`year` must therefore run before `month`**, which reads that map; the CI workflow orders them accordingly. `floor_year` comes from the query data, never from the previous map — reading it back would pin the floor forever and hide any earlier year the source later exposes.
   - `buildDayOutput` — one query per disease covers the WHOLE window, grouping on `DIAGNOSIS_DATE` (primary) with STATE secondary. The date arrives as `G0`, the same single-primary-dimension shape `year` uses. Keep the window under 500 days. One row is one day with cases, so the 500-row cap bites at 500 days, NOT at 365 — measured 6 Sep 2026: 249 and 365 days returned every row, while 614, 730, 1096 and 2441 days all returned exactly 500 and dropped the NEWEST data with no error.
@@ -97,8 +97,20 @@ Each `notifications_by_*` file is an ARRAY of period objects, each keeping the f
 - `data/notifications_by_day_diagnostic.json` — 60 elements, keyed `date` (`YYYY-MM-DD`). A rolling window by DIAGNOSIS_DATE, always rebuilt whole. The `_diagnostic` suffix is now redundant, but renaming it would break every consumer, so it stays.
 
   A second daily file on NOTIFICATION_DATE, and its `reported` mode, were removed on 8 Sep 2026. The columns disagree by about 27% over a year, and only the diagnosis basis reconciles with the month and year files. `powerbi.js` now hardcodes `DIAGNOSIS_DATE`; restoring the other column means re-deriving it from the dashboard.
-- `data/notifications_by_month.json` — 1,065 elements, keyed `year` + `month`.
-- `data/notifications_by_year.json` — 89 elements, keyed `year`, from `floor_year` (1938).
+- `data/notifications_by_month.json` — 2,241 elements, keyed `year` + `month`.
+- `data/notifications_by_year.json` — 187 elements, keyed `year`, from `floor_year` (1840).
+
+  **`floor_year` is set by ONE bad source row.** A single Chlamydial infection
+  case is dated Dec 1840, VIC — verified against the live source on 18 Sep 2026,
+  so the scraper reads it correctly and the SOURCE is wrong. Chlamydia was not
+  notifiable in 1840 and VIC was not a colony until 1851. It drags `floor_year`
+  from 1938 to 1840 and adds 97 empty years to both files. Re-check it before
+  you treat any pre-1938 year as real.
+
+  **`floor_year` needs 2 runs to propagate.** `buildYearOutput` READS the floor
+  off the old map, then REWRITES the map from the fresh data. So a run where the
+  floor moves writes a year file against the OLD floor while `month` uses the
+  new one, and the 2 files disagree. Run `year` a second time to settle it.
 - `data/ref_disease_groups.json`, `data/ref_disease_year_map.json` — see Architecture.
 - `data/log.json` — one entry per run: mode, scope, start time, seconds, request count. Last 100 kept. Query it to see what a mode costs.
 - `data/archive/<YYYYMMDD>_notifications_by_day_diagnostic.json` — a copy of the day-diagnostic file as it stood BEFORE the run that replaced it, flat in the folder, no subfolders. Every date is kept, and nothing is pruned. The date prefix comes from the copy's OWN `last_refreshed`, never from today, so a run that finds no new refresh cannot mislabel a copy. A same-date copy overwrites, so a re-run is safe.
@@ -115,10 +127,14 @@ Days sum to months and months to years, verified to 0 difference across 618,544 
 
 `refresh-check.js` is the scheduled runs' guard, and has no part in a scrape. `node refresh-check.js` prints the dashboard's current `last_refreshed`; `--stale` compares it against the OLDEST stamp across the 4 `notifications_*` files, exiting 0 when a scrape is worth running and 1 when the local data is already current. A missing folder or a missing timestamp reads as `null` and forces the scrape, so the guard fails OPEN — a bug in it cannot silently stop the cron.
 
-`.github/workflows/main.yml` runs on a twice-daily cron and via manual dispatch: checkout, `npm install`, run the scraper, then commits and pushes any new/changed files in `data/` directly to `main`. The cron fires at 08:00 and 16:00 local. **The source refresh time MOVED.** It ran at ~15:30 daily to 15 Sep 2026, then shifted to ~05:31 — measured 17 Sep 2026 against the 15 Sep archive stamp. So 08:00 is now the slot that catches it, about 2.5 hours later, and 16:00 is the backup. Re-check the current stamp with `node refresh-check.js` before you trust either time.
+`.github/workflows/main.yml` runs on a 6-hourly cron and via manual dispatch: checkout, `npm install`, run the scraper, then commits and pushes any new/changed files in `data/` directly to `main`. The cron fires at 08:00, 14:00, 20:00 and 02:00 local, as ONE comma-list row (`0 22,4,10,16 * * *`) rather than 4 rows. **The source refresh time MOVED.** It ran at ~15:30 daily to 15 Sep 2026, then shifted to ~05:31 — measured 17 Sep 2026 against the 15 Sep archive stamp. So 08:00 is now the slot that catches it, about 2.5 hours later, and the other 3 are backups. Re-check the current stamp with `node refresh-check.js` before you trust any of them. GitHub cannot be made to prioritise a scheduled run — there is no setting for it, so more slots is the only cover for a dropped one.
 
 **The cron times need a change twice a year.** GitHub cron has no DST, so the UTC values are anchored to ONE offset. They are set for AEST (UTC+10), which runs to 4 Oct 2026; shift each slot 1 hour earlier in UTC on that date. The cost of the wrong anchor is not cosmetic: while it was set to AEDT a 15:30 slot fired at 15:30:00 against a refresh stamped 15:30:47, and lost the race by 47 seconds. That race is why no slot sits on the refresh time itself.
 
 GitHub queues the `schedule` event at low priority, and this is the LARGEST operational risk in the pipeline. Measured starts ran 5 minutes to over 3 hours late, and slots are dropped outright: both morning slots on 12 Sep 2026, and ALL THREE on 13 Sep, which left `main` a full day behind until a local run filled it. The 2 runs that did fire on 12 Sep started 179 and 190 minutes late, and both then SKIPPED — a slot delayed past the next one finds the stamp already handled and does nothing. The slot count went 5 to 3 on 12 Sep 2026, 3 to 2 on 14 Sep, then 2 to 1 on 16 Sep, so the 08:00 catch-up is the only cover for a dropped 16:00 slot. Check `data/log.json` against the dashboard rather than assuming the cron kept up. The guard bounds the COST of a wasted window — nothing new costs ~2 requests instead of ~330 — but it cannot recover a slot that never fired. Only a manual dispatch or a local run fills that gap. A scheduled run that does proceed runs `all-time`, `day`, `year` and `month` in turn. The manual dispatch exposes a `mode` choice input (`all-time`/`day`/`year`/`month`) forwarded to `node index.js`, and always skips the guard — so a re-scrape can be forced. Every mode runs with no scope arg, so `year`/`month` only ever refresh the current period and `day` only its rolling 60-day window, never a full backfill.
 
-The runner's speed against the PowerBI host is not stable. On 11 Sep 2026 a scheduled run needed ~100 seconds for ONE disease and hit the 15-minute step timeout with 62 of 66 left; a manual dispatch 40 minutes later finished `all-time` in 34s on the same runner type. The same query runs in 17s locally. Two changes cover this: `fetchWithRetry` in `powerbi.js` bounds each request (see Architecture), and the workflow timeouts are now 45 minutes on the job and 40 on the script step.
+The job pins `runs-on: ubuntu-26.04` rather than `ubuntu-latest`. GitHub
+migrates that label to Ubuntu 26 between 19 Oct and 19 Nov 2026, which would
+move the image under a scheduled run with nobody watching.
+
+The runner's speed against the PowerBI host is not stable. On 11 Sep 2026 a scheduled run needed ~100 seconds for ONE disease and hit the 15-minute step timeout with 62 of 66 left; a manual dispatch 40 minutes later finished `all-time` in 34s on the same runner type. The same query runs in 17s locally. Two changes cover this: `fetchWithRetry` in `powerbi.js` bounds each request (see Architecture), and the workflow timeouts are 15 minutes on both the job and the script step. All 4 modes take about 5.4 minutes at their measured worst, so 15 holds.
