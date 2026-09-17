@@ -1,6 +1,6 @@
 {
-  "last_refreshed": "2026-09-17T05:31:04+10:00",
-  "floor_year": 1938,
+  "last_refreshed": "2026-09-18T05:31:09+10:00",
+  "floor_year": 1840,
   "diseases": {
     "Anthrax": {
       "first_year": 1998,
@@ -218,9 +218,10 @@
       ]
     },
     "Chlamydial infection": {
-      "first_year": 1938,
+      "first_year": 1840,
       "last_year": 2026,
       "years": [
+        1840,
         1938,
         1989,
         1990,
@@ -2106,9 +2107,21 @@
       ]
     },
     "Vibrio parahaemolyticus infection": {
-      "first_year": 2021,
+      "first_year": 1999,
       "last_year": 2026,
       "years": [
+        1999,
+        2003,
+        2006,
+        2007,
+        2008,
+        2009,
+        2010,
+        2011,
+        2015,
+        2016,
+        2017,
+        2018,
         2021,
         2022,
         2024,
