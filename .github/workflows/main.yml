@@ -1,12 +1,8 @@
 name: NINDSS Data
 on:
   schedule:
-    # Two UTC anchors for the same local targets (08:00, 14:00, 20:00,
-    # 02:00 Melbourne) — one for AEST, one for AEDT. Whichever isn't the
-    # current offset fires an hour off and gets skipped by the local-time
-    # check below, so this self-corrects across DST changes with no edits.
-    - cron: '0 22,4,10,16 * * *'  # AEST (UTC+10)
-    - cron: '0 21,3,9,15 * * *'   # AEDT (UTC+11)
+    - cron: '0 8,14,20 * * *'
+      timezone: "Australia/Melbourne"
   workflow_dispatch:
     inputs:
       mode:
@@ -32,26 +28,12 @@ jobs:
       with:
         node-version: 22
 
-    - name: Check Melbourne local time
-      id: time
-      if: github.event_name != 'workflow_dispatch'
-      # Target local times: 08:00, 14:00, 20:00, 02:00 Melbourne. Adjust the
-      # hour list here if the target refresh time moves.
-      run: |
-        HOUR=$(TZ='Australia/Melbourne' date +%H)
-        if [[ "$HOUR" =~ ^(08|14|20|02)$ ]]; then
-          echo "run=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "run=false" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Install dependencies
-      if: github.event_name == 'workflow_dispatch' || steps.time.outputs.run == 'true'
       run: npm install --loglevel=error
 
     - name: Check for a refresh
       id: refresh
-      if: github.event_name != 'workflow_dispatch' && steps.time.outputs.run == 'true'
+      if: github.event_name != 'workflow_dispatch'
       run: |
         if node refresh-check.js --stale; then
           echo "stale=true" >> "$GITHUB_OUTPUT"
