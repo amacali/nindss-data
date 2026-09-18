@@ -1,30 +1,12 @@
 name: NINDSS Data
 on:
-  # push:
-  #   branches:
-  #     - main
   schedule:
-    # Times are UTC. GitHub cron has NO DST, so these are anchored to ONE
-    # offset and drift by an hour when Melbourne switches. They are set for
-    # AEST (UTC+10), which runs to 4 Oct 2026 — SHIFT EACH SLOT 1 HOUR
-    # EARLIER IN UTC on that date, or every time reads an hour late.
-    #
-    # THE REFRESH TIME MOVED. The dashboard refreshed at ~15:30 local daily
-    # to 15 Sep 2026, then shifted to ~05:31 — measured 17 Sep 2026. So 08:00
-    # is now the slot that catches it and the other 3 are backups. Check the
-    # current stamp with `node refresh-check.js` before you move a slot.
-    #
-    # Do not put a slot on the refresh time itself: a 15:30 slot fired at
-    # 15:30:00 against a refresh stamped 15:30:47, and lost by 47 seconds.
-    #
-    # Most windows find nothing new — the refresh guard below skips those in
-    # ~2 requests rather than re-running a ~330-request scrape. GitHub queues
-    # the schedule event at low priority, so a slot can start over an hour
-    # late or not fire at all: both morning slots were dropped on 12 Sep 2026
-    # and all 3 on 13 Sep. The guard makes a wasted window cheap, but it
-    # cannot recover a slot that never fires — only a manual dispatch or a
-    # local run fills that gap.
-    - cron: '0 22,4,10,16 * * *'    # every 6h: 08:00, 14:00, 20:00, 02:00 AEST
+    # Two UTC anchors for the same local targets (08:00, 14:00, 20:00,
+    # 02:00 Melbourne) — one for AEST, one for AEDT. Whichever isn't the
+    # current offset fires an hour off and gets skipped by the local-time
+    # check below, so this self-corrects across DST changes with no edits.
+    - cron: '0 22,4,10,16 * * *'  # AEST (UTC+10)
+    - cron: '0 21,3,9,15 * * *'   # AEDT (UTC+11)
   workflow_dispatch:
     inputs:
       mode:
@@ -39,54 +21,46 @@ on:
 
 jobs:
   archive:
-    # The runner's speed against the PowerBI host varies by a factor of 100.
-    # A local run of all 4 modes takes ~70s, and a fast runner takes ~135s,
-    # but on 11 Sep 2026 a runner needed ~100s for ONE of the 66 diseases.
-    # No request in powerbi.js sets a timeout or retries, so a stalled
-    # request waits until a timeout here kills the step.
     timeout-minutes: 15
-    # Pinned, not `ubuntu-latest`. That label migrates to Ubuntu 26 over
-    # 19 Oct to 19 Nov 2026, which moves the image under a scheduled run
-    # with nobody watching. Pin forward instead, and meet the change here.
     runs-on: ubuntu-26.04
     steps:
-    # @v5 actions declare `using: node24` — v3/v4 declared node20, which triggers
-    # the "Node.js 20 is deprecated … forced to run on Node.js 24" runner warning
-    # (Node 20 EOL Apr 2026; runners default to Node 24 on 16 Jun 2026).
     - uses: actions/checkout@v5
       with:
         fetch-depth: 1
         ref: main
     - uses: actions/setup-node@v5
       with:
-        # Node 20+ required: undici (via cheerio) references the `File` global,
-        # which does not exist on Node 18 ("ReferenceError: File is not defined").
         node-version: 22
+
+    - name: Check Melbourne local time
+      id: time
+      if: github.event_name != 'workflow_dispatch'
+      # Target local times: 08:00, 14:00, 20:00, 02:00 Melbourne. Adjust the
+      # hour list here if the target refresh time moves.
+      run: |
+        HOUR=$(TZ='Australia/Melbourne' date +%H)
+        if [[ "$HOUR" =~ ^(08|14|20|02)$ ]]; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "run=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Install dependencies
-      # --loglevel=error silences npm's harmless transitive-dep deprecation
-      # warnings (whatwg-encoding, node-domexception — pulled in under cheerio);
-      # real errors still surface.
+      if: github.event_name == 'workflow_dispatch' || steps.time.outputs.run == 'true'
       run: npm install --loglevel=error
-    # Scheduled runs only: skip the scrape when the dashboard has not refreshed
-    # since the last run. Exit 1 means the local data is already current.
-    # Manual dispatch always runs, so a re-scrape can be forced.
+
     - name: Check for a refresh
       id: refresh
-      if: github.event_name != 'workflow_dispatch'
+      if: github.event_name != 'workflow_dispatch' && steps.time.outputs.run == 'true'
       run: |
         if node refresh-check.js --stale; then
           echo "stale=true" >> "$GITHUB_OUTPUT"
         else
           echo "stale=false" >> "$GITHUB_OUTPUT"
         fi
+
     - name: Run script
-      # Scheduled runs pass no input → run all 4 modes, ~330 requests in
-      # total. Manual dispatch runs only the selected mode.
-      #
-      # ORDER MATTERS: 'year' writes data/ref_disease_year_map.json, and
-      # 'month' reads it to skip the 25-year blocks a disease has no cases in.
-      # Run 'month' first and it uses the PREVIOUS run's map — which writes
-      # zeros, without querying, for a disease-year the map does not list.
+      # 'year' writes ref_disease_year_map.json; 'month' reads it — keep this order.
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
         if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -94,13 +68,11 @@ jobs:
         else
           node index.js all-time
           node index.js day
-          node index.js year     # writes ref_disease_year_map.json
-          node index.js month    # reads it — must follow 'year'
+          node index.js year
+          node index.js month
         fi
-      # Raised from 15 after a slow runner timed out with 62 of 66 diseases
-      # left. A healthy run finishes well inside this; the limit only stops a
-      # run that cannot finish, so it must not be removed.
       timeout-minutes: 15
+
     - name: Push data
       if: github.event_name == 'workflow_dispatch' || steps.refresh.outputs.stale == 'true'
       run: |
