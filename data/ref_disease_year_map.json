@@ -1,6 +1,6 @@
 {
-  "last_refreshed": "2026-09-21T05:31:34+10:00",
-  "floor_year": 1840,
+  "last_refreshed": "2026-09-22T05:31:30+10:00",
+  "floor_year": 1938,
   "diseases": {
     "Anthrax": {
       "first_year": 1998,
@@ -218,10 +218,9 @@
       ]
     },
     "Chlamydial infection": {
-      "first_year": 1840,
+      "first_year": 1938,
       "last_year": 2026,
       "years": [
-        1840,
         1938,
         1989,
         1990,
