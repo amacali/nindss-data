@@ -2,40 +2,6 @@
   {
     "mode": "all-time",
     "scope": null,
-    "started_at": "2026-09-11T08:44:35.643Z",
-    "seconds": 13.1,
-    "requests": 66,
-    "diseases": 66,
-    "file": "data/notifications_all_time.json"
-  },
-  {
-    "mode": "day",
-    "scope": null,
-    "started_at": "2026-09-11T08:44:53.637Z",
-    "seconds": 12.3,
-    "requests": 66,
-    "days": 60,
-    "file": "data/notifications_by_day_diagnostic.json"
-  },
-  {
-    "mode": "year",
-    "scope": null,
-    "started_at": "2026-09-11T08:45:06.159Z",
-    "seconds": 12.2,
-    "requests": 66,
-    "file": "data/notifications_by_year.json"
-  },
-  {
-    "mode": "month",
-    "scope": null,
-    "started_at": "2026-09-11T08:45:18.547Z",
-    "seconds": 28.3,
-    "requests": 131,
-    "file": "data/notifications_by_month.json"
-  },
-  {
-    "mode": "all-time",
-    "scope": null,
     "started_at": "2026-09-12T07:16:51.629Z",
     "seconds": 41.2,
     "requests": 67,
@@ -848,6 +814,40 @@
     "started_at": "2026-10-06T01:44:57.765Z",
     "seconds": 59.8,
     "requests": 133,
+    "file": "data/notifications_by_month.json"
+  },
+  {
+    "mode": "all-time",
+    "scope": null,
+    "started_at": "2026-10-07T00:34:29.932Z",
+    "seconds": 36.8,
+    "requests": 66,
+    "diseases": 66,
+    "file": "data/notifications_all_time.json"
+  },
+  {
+    "mode": "day",
+    "scope": null,
+    "started_at": "2026-10-07T00:35:06.905Z",
+    "seconds": 33.3,
+    "requests": 66,
+    "days": 60,
+    "file": "data/notifications_by_day_diagnostic.json"
+  },
+  {
+    "mode": "year",
+    "scope": null,
+    "started_at": "2026-10-07T00:35:40.392Z",
+    "seconds": 28.9,
+    "requests": 66,
+    "file": "data/notifications_by_year.json"
+  },
+  {
+    "mode": "month",
+    "scope": null,
+    "started_at": "2026-10-07T00:36:09.451Z",
+    "seconds": 63.6,
+    "requests": 132,
     "file": "data/notifications_by_month.json"
   }
 ]
