@@ -1,5 +1,5 @@
 {
-  "last_refreshed": "2026-10-16T03:37:11+11:00",
+  "last_refreshed": "2026-10-20T16:08:08+11:00",
   "floor_year": 1938,
   "diseases": {
     "Anthrax": {
@@ -1541,6 +1541,13 @@
         2026
       ]
     },
+    "Rabies": {
+      "first_year": 2026,
+      "last_year": 2026,
+      "years": [
+        2026
+      ]
+    },
     "Respiratory syncytial virus (RSV)": {
       "first_year": 2003,
       "last_year": 2026,
@@ -1801,6 +1808,27 @@
         2024,
         2025,
         2026
+      ]
+    },
+    "Syphilis": {
+      "first_year": 1991,
+      "last_year": 2023,
+      "years": [
+        1991,
+        1992,
+        1993,
+        1994,
+        1995,
+        1996,
+        1997,
+        1998,
+        1999,
+        2000,
+        2001,
+        2002,
+        2003,
+        2004,
+        2023
       ]
     },
     "Syphilis < 2 years": {
