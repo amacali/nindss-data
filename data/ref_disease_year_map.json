@@ -1,5 +1,5 @@
 {
-  "last_refreshed": "2026-10-23T03:30:48+11:00",
+  "last_refreshed": "2026-10-24T03:37:15+11:00",
   "floor_year": 1938,
   "diseases": {
     "Anthrax": {
@@ -1997,11 +1997,10 @@
     },
     "Tularaemia": {
       "first_year": 2011,
-      "last_year": 2026,
+      "last_year": 2020,
       "years": [
         2011,
-        2020,
-        2026
+        2020
       ]
     },
     "Typhoid Fever": {
