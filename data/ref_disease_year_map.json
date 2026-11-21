@@ -1,6 +1,6 @@
 {
-  "last_refreshed": "2026-11-20T03:30:45+11:00",
-  "floor_year": 1938,
+  "last_refreshed": "2026-11-21T03:37:10+11:00",
+  "floor_year": 1840,
   "diseases": {
     "Anthrax": {
       "first_year": 1998,
@@ -218,9 +218,10 @@
       ]
     },
     "Chlamydial infection": {
-      "first_year": 1938,
+      "first_year": 1840,
       "last_year": 2026,
       "years": [
+        1840,
         1938,
         1989,
         1990,
@@ -1538,13 +1539,6 @@
         2023,
         2024,
         2025,
-        2026
-      ]
-    },
-    "Rabies": {
-      "first_year": 2026,
-      "last_year": 2026,
-      "years": [
         2026
       ]
     },
